@@ -1,0 +1,14 @@
+# Прошивки и модели — тяжёлые бинарники, в git не храним
+/firmware/*.bin
+/firmware/**/*.kmodel
+/firmware/**/*.smodel
+
+# Сборка C/SDK (если появится)
+/build/
+*.o
+*.elf
+*.map
+
+# Системное
+Thumbs.db
+.DS_Store
