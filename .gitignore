@@ -3,6 +3,9 @@
 /firmware/**/*.kmodel
 /firmware/**/*.smodel
 
+# Локально скачанные инсталляторы/архивы (драйвер, kflash_gui, IDE)
+/downloads/
+
 # Сборка C/SDK (если появится)
 /build/
 *.o
