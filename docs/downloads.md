@@ -6,30 +6,38 @@
 Идём по пути **MaixPy (MicroPython)** — это самый быстрый способ поднять камеру, экран и Wi-Fi
 без сборки C-тулчейна. C/SDK-вариант оставляем на потом (см. внизу, опционально).
 
-## Обязательное (минимум для bring-up)
+## ⚠️ Внимание: не то качать
+Не бери **MaixPy v4.x** и образы **MaixCam** (`maixcam-...img.xz`) — это новая платформа, **не K210**.
+Для нашего K210 нужна старая ветка **MaixPy-v1 (v0.6.3)**. Точные файлы ниже.
 
-### 1. Драйвер USB-Serial (Windows)
-Док прошивается/общается через USB-serial мост. Скачать оба, поставить нужный по факту
-определения платы в Диспетчере устройств:
-- **CH340/CH341** драйвер (WCH): https://www.wch-ic.com/downloads/CH341SER_EXE.html
-- (если мост CH55x) **CH372/CH55x** — обычно тот же CH341SER подходит.
-> Когда воткнёшь плату в USB — скажи, какой COM/чип появился в Диспетчере устройств, тогда
-> зафиксируем точный драйвер.
+## Обязательное (минимум для bring-up) — точные имена
 
-### 2. MaixPy — прошивка (firmware .bin)
-MicroPython для K210 с поддержкой камеры/LCD/KPU/Wi-Fi.
-- Релизы: https://github.com/sipeed/MaixPy/releases
-- Зеркало/последние bin: http://dl.sipeed.com/MAIX/MaixPy/release/master/
-- Брать сборку **`maixpy_...minimum_with_ide_support.bin`** (с поддержкой IDE) или полную
-  `maixpy_...full.bin`. Положить в `firmware/`.
+### 1. Драйвер USB-Serial (Windows) — `CH341SER.ZIP`
+Док прошивается через USB-serial мост. Скачать **`CH341SER.ZIP`** (внутри `CH341SER.EXE` — запустить, Install):
+- https://www.wch-ic.com/downloads/CH341SER_EXE.html
+> Если после установки плата в Диспетчере устройств определится другим чипом (не CH340) —
+> скажи мне какой COM/чип, подберём драйвер. Но начинать с CH341SER.
 
-### 3. kflash_gui — прошивальщик
-GUI-утилита залить .bin в K210 по USB.
-- https://github.com/sipeed/kflash_gui/releases (взять Windows-сборку, .zip/.exe).
+### 2. MaixPy K210 — прошивка (один `.bin`, не архив)
+Папка: **https://dl.sipeed.com/MAIX/MaixPy/release/master/**
+Зайти в папку версии **`v0.6.3`** (последняя для K210) и скачать файл, имя которого
+заканчивается на **`_minimum_with_ide_support.bin`** — т.е. вида:
+```
+maixpy_v0.6.3_<хеш>_minimum_with_ide_support.bin
+```
+(в имени есть хеш коммита — бери именно вариант с суффиксом `_minimum_with_ide_support`).
+Положить в `firmware/`. Релиз-страница для сверки версии: https://github.com/sipeed/MaixPy-v1/releases
 
-### 4. MaixPy IDE (удобно, но не строго обязательно)
-IDE с REPL и просмотром видеопотока с камеры — очень помогает на этапе bring-up.
-- https://github.com/sipeed/MaixPy-IDE/releases (Windows installer).
+### 3. kflash_gui — прошивальщик → `kflash_gui_v1.8.2_windows.7z`
+GUI залить .bin в K210. **Это .7z** — нужен распаковщик (см. п.5):
+- https://github.com/sipeed/kflash_gui/releases/download/v1.8.2/kflash_gui_v1.8.2_windows.7z
+
+### 4. MaixPy IDE → `maixpy-ide-windows-0.2.4.0.exe`
+IDE с REPL и видеопотоком с камеры — сильно помогает на bring-up. Это **.exe-инсталлятор**:
+- Папка: https://dl.sipeed.com/MAIX/MaixPy/ide/  → версия `v0.2.4` → `maixpy-ide-windows-0.2.4.0.exe`
+
+### 5. 7-Zip (чтобы открыть .7z из п.3) — `7z????-x64.exe`
+Глобальный сайт, VPN не нужен: https://www.7-zip.org/ (если 7-Zip уже стоит — пропусти).
 
 ## Желательное (для нейросетей/демо)
 
@@ -54,9 +62,10 @@ firmware/models/*.kmodel         — нейромодели (если качал
 ```
 `firmware/` и тяжёлые бинарники в git не коммитим (см. `.gitignore`).
 
-## Короткий чек-лист
-- [ ] CH341SER драйвер
-- [ ] MaixPy `.bin` (с IDE support)
-- [ ] kflash_gui (Windows)
-- [ ] MaixPy IDE (опц.)
+## Короткий чек-лист (точные файлы)
+- [ ] `CH341SER.ZIP` — драйвer USB-serial
+- [ ] `maixpy_v0.6.3_*_minimum_with_ide_support.bin` — прошивка K210 (из папки release/master/v0.6.3)
+- [ ] `kflash_gui_v1.8.2_windows.7z` — прошивальщик
+- [ ] `maixpy-ide-windows-0.2.4.0.exe` — IDE (опц., но удобно)
+- [ ] `7z*-x64.exe` — если 7-Zip ещё не стоит (для распаковки kflash_gui)
 - [ ] пара `.kmodel` для теста KPU (опц.)
