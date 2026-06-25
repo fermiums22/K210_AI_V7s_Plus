@@ -1,0 +1,15 @@
+import socket, sys
+port = int(sys.argv[1]) if len(sys.argv) > 1 else 9999
+srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("0.0.0.0", port))
+srv.listen(1)
+srv.settimeout(40)
+print("PC server listening on", port, flush=True)
+conn, addr = srv.accept()
+print("client connected:", addr, flush=True)
+conn.sendall(b"HELLO_MEATBAG\n")
+data = conn.recv(64)
+print("got back from board:", data, flush=True)
+conn.close(); srv.close()
+print("server done", flush=True)

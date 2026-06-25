@@ -12,6 +12,14 @@
 *.elf
 *.map
 
+# Секреты: Wi-Fi креды живут только на плате в /flash/wifi.json, не в git
+wifi.json
+**/wifi.json
+
 # Системное
 Thumbs.db
 .DS_Store
+
+# Python cache
+__pycache__/
+*.pyc
