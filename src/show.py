@@ -1,14 +1,19 @@
-# V7s_Plus emotive show: cycle 10 emotions forever. While a line plays, the
-# audio feed and the mouth-frame swap run in ONE loop (no threads -- threads
-# starve the draw loop on this MaixPy), so the mouth alternates closed/open in
-# step with the speech. Then a short breathing beat, then the next emotion.
+# V7s_Plus emotive show. The mouth and the amplifier are driven by the audio
+# AMPLITUDE: loud -> mouth open, quiet -> mouth closed; the amp is un-muted only
+# while there is sound and muted after ~100 ms of silence (no hiss). Right now
+# the amplitude comes from a pre-computed envelope of each file; the SAME logic
+# will run on the live wifi audio stream from the server later.
 #
-# Amp: kept POWERED (SHDN=IO10 high); silenced via MUTE=IO9 only.
-# Faces: /sd/f_<emo>.jpg (closed) + /sd/f_<emo>_t.jpg (open).  Voices: /sd/e_<emo>.wav
+# Amp pins (active-low mod): MUTE=IO9, SHDN=IO10.
+# Faces: /sd/f_<emo>.jpg (closed) + /sd/f_<emo>_t.jpg (open). Voices: /sd/e_<emo>.wav
 import image, lcd, time, gc, math
 from fpioa_manager import fm
 from Maix import I2S, GPIO
 import audio
+try:
+    from envelopes import ENV, WIN_MS
+except Exception:
+    ENV, WIN_MS = {}, 40
 
 W, H = lcd.width(), lcd.height()
 EMOS = ["neutral", "happy", "laughing", "excited", "love",
@@ -19,7 +24,9 @@ EYE_COL = {"neutral": (70, 200, 255), "happy": (90, 235, 150),
            "surprised": (120, 220, 255), "sad": (90, 150, 245),
            "angry": (255, 70, 60), "sleepy": (110, 130, 200)}
 POST_BREATHE = 1.4
-TALK_MS = 120          # mouth swap period while speaking
+GATE_LVL = 2          # amplitude below this counts as silence
+MOUTH_LVL = 4         # amplitude at/above this opens the mouth
+GATE_MS = 100         # mute after this much continuous silence
 
 fm.register(17, fm.fpioa.GPIO6)
 GPIO(GPIO.GPIO6, GPIO.OUT).value(0)
@@ -27,10 +34,10 @@ lcd.init()
 
 fm.register(9, fm.fpioa.GPIO1)
 fm.register(10, fm.fpioa.GPIO2)
-_mute = GPIO(GPIO.GPIO1, GPIO.OUT)
-_shdn = GPIO(GPIO.GPIO2, GPIO.OUT)
-_shdn.value(1)
+_mute = GPIO(GPIO.GPIO1, GPIO.OUT)   # active-low: 1=unmuted, 0=muted
+_shdn = GPIO(GPIO.GPIO2, GPIO.OUT)   # active-low: 1=powered, 0=shutdown
 _mute.value(0)
+_shdn.value(0)
 
 fm.register(33, fm.fpioa.I2S0_WS)
 fm.register(35, fm.fpioa.I2S0_SCLK)
@@ -38,8 +45,8 @@ fm.register(34, fm.fpioa.I2S0_OUT_D1)
 _dev = I2S(I2S.DEVICE_0)
 
 
-def amp(on):
-    _mute.value(1 if on else 0)
+def _levels(emo):
+    return [int(c, 16) for c in ENV.get(emo, "")]
 
 
 def _breathe(closed, col, dur):
@@ -69,6 +76,7 @@ def perform(emo):
     col = EYE_COL.get(emo, (70, 200, 255))
     closed = image.Image("/sd/f_%s.jpg" % emo)
     talk = image.Image("/sd/f_%s_t.jpg" % emo)
+    lv = _levels(emo)
     try:
         p = audio.Audio(path="/sd/e_%s.wav" % emo)
         p.volume(95)
@@ -78,27 +86,39 @@ def perform(emo):
                             cycles=I2S.SCLK_CYCLES_32,
                             align_mode=I2S.RIGHT_JUSTIFYING_MODE)
         _dev.set_sample_rate(16000)
-        amp(True)
-        time.sleep_ms(120)
+        _shdn.value(1)            # power the amp (stays powered through the phrase)
+        _mute.value(0)            # start muted; the gate un-mutes on sound
+        time.sleep_ms(80)
         lcd.display(closed)
-        last = time.ticks_ms()
         openm = False
-        while True:                       # interleave: feed audio + swap mouth
+        t0 = time.ticks_ms()
+        quiet_since = t0
+        while True:
             if p.play() is None:
                 break
             now = time.ticks_ms()
-            if time.ticks_diff(now, last) >= TALK_MS:
-                openm = not openm
-                lcd.display(talk if openm else closed)
-                last = now
+            idx = time.ticks_diff(now, t0) // WIN_MS
+            lvl = lv[idx] if idx < len(lv) else 0
+            # amplitude noise gate
+            if lvl >= GATE_LVL:
+                _mute.value(1)
+                quiet_since = now
+            elif time.ticks_diff(now, quiet_since) >= GATE_MS:
+                _mute.value(0)
+            # amplitude-driven mouth (redraw only on change)
+            want = lvl >= MOUTH_LVL
+            if want != openm:
+                openm = want
+                lcd.display(talk if want else closed)
         p.finish()
     except Exception as e:
         print("speak err:", e)
     finally:
-        amp(False)
+        _mute.value(0)
+        _shdn.value(0)            # full silence between phrases
     del talk
     gc.collect()
-    lcd.display(closed)                    # mouth shut
+    lcd.display(closed)
     _breathe(closed, col, POST_BREATHE)
     del closed
     gc.collect()

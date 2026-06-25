@@ -167,6 +167,7 @@ def main():
 
 
 main()
+time.sleep(2.5)          # keep the IP / status screen visible before the show
 
 # Launch the emotive show — cycles 10 emotions (face + voice) forever. This is
 # the robot's default idle behaviour on power-up.
