@@ -154,7 +154,17 @@ def draw_mouth(base, glow_layer, p):
         d.line([CX - 18 * SS, my, CX + 18 * SS, my], fill=col, width=6 * SS)
 
 
-def render(emo):
+def draw_mouth_open(d, dg, p):
+    # generic talking (open) mouth used for the "_t" frame of every emotion
+    col = p["eye"]
+    my = 174 * SS
+    d.ellipse([CX - 27 * SS, my - 22 * SS, CX + 27 * SS, my + 26 * SS],
+              fill=lerp(col, DARK, 0.5), outline=col, width=6 * SS)
+    dg.ellipse([CX - 27 * SS, my - 22 * SS, CX + 27 * SS, my + 26 * SS],
+               outline=col, width=8 * SS)
+
+
+def render(emo, talk=False):
     p = EMOS[emo]
     w, h = W * SS, H * SS
     # background radial-ish (vertical) gradient
@@ -195,7 +205,10 @@ def render(emo):
     draw_brow(img, eyR, eyy, p["brow"], "R")
 
     # ---- mouth ----
-    draw_mouth(img, glow_layer, p)
+    if talk:
+        draw_mouth_open(ImageDraw.Draw(img), ImageDraw.Draw(glow_layer), p)
+    else:
+        draw_mouth(img, glow_layer, p)
 
     # extras
     if emo == "sleepy":
@@ -225,10 +238,9 @@ def main(argv):
     out = argv[1] if len(argv) > 1 else "."
     os.makedirs(out, exist_ok=True)
     for emo in EMOS:
-        im = render(emo)
-        path = os.path.join(out, "f_%s.jpg" % emo)
-        im.save(path, "JPEG", quality=88)
-        print("rendered", path, os.path.getsize(path))
+        render(emo, talk=False).save(os.path.join(out, "f_%s.jpg" % emo), "JPEG", quality=88)
+        render(emo, talk=True).save(os.path.join(out, "f_%s_t.jpg" % emo), "JPEG", quality=88)
+        print("rendered", emo, "(+ _t)")
 
 
 if __name__ == "__main__":

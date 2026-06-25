@@ -1,12 +1,12 @@
-# V7s_Plus emotive show: cycle 10 emotions forever. Each emotion: robot face
-# with breathing (squash/stretch) + blinking, a moving mouth while the voice
-# line plays (audio runs in a background thread so the mouth animates in sync),
-# then idle-breathe for the rest of the ~7 s slot.
+# V7s_Plus emotive show: cycle 10 emotions forever. Per emotion: while the
+# neural-TTS line plays (audio in a background thread) the face alternates
+# between two pre-rendered frames -- mouth closed (f_<emo>.jpg) and mouth open
+# (f_<emo>_t.jpg) -- so the robot looks like it's talking; then a short
+# breathing (squash/stretch) + blink beat, then the next emotion. No long dead
+# air after a phrase.
 #
-# Amp: per the hardware mod the amplifier is left POWERED (SHDN=IO10 high) and
-# we silence only via MUTE=IO9 (active-low) -> instant, no power-up/down hiss.
-#
-# Faces: /sd/f_<emo>.jpg   Voices: /sd/e_<emo>.wav
+# Amp: kept POWERED (SHDN=IO10 high); silenced via MUTE=IO9 only -> instant,
+# no power-up/down hiss.
 import image, lcd, time, gc, math, _thread
 from fpioa_manager import fm
 from Maix import I2S, GPIO
@@ -20,15 +20,16 @@ EYE_COL = {"neutral": (70, 200, 255), "happy": (90, 235, 150),
            "love": (255, 110, 150), "curious": (120, 210, 255),
            "surprised": (120, 220, 255), "sad": (90, 150, 245),
            "angry": (255, 70, 60), "sleepy": (110, 130, 200)}
-SLOT_S = 7.0
+POST_BREATHE = 1.6     # seconds of idle breathing after each phrase
+TALK_MS = 140          # mouth open/close swap period
 
 fm.register(17, fm.fpioa.GPIO6)
 GPIO(GPIO.GPIO6, GPIO.OUT).value(0)
 lcd.init()
 
-# amplifier: keep powered, silence with MUTE only
-fm.register(9, fm.fpioa.GPIO1)     # MUTE  (active low)
-fm.register(10, fm.fpioa.GPIO2)    # SHDN  (kept high = powered)
+# amplifier: powered, silence via MUTE only
+fm.register(9, fm.fpioa.GPIO1)
+fm.register(10, fm.fpioa.GPIO2)
 _mute = GPIO(GPIO.GPIO1, GPIO.OUT)
 _shdn = GPIO(GPIO.GPIO2, GPIO.OUT)
 _shdn.value(1)
@@ -43,10 +44,10 @@ _state = {"talking": False}
 
 
 def amp(on):
-    _mute.value(1 if on else 0)    # SHDN stays high; toggle MUTE only
+    _mute.value(1 if on else 0)
 
 
-def _speak(path, max_s=10):
+def _speak(path, max_s=12):
     try:
         p = audio.Audio(path=path)
         p.volume(95)
@@ -66,52 +67,53 @@ def _speak(path, max_s=10):
     except Exception as e:
         print("speak err:", e)
     finally:
-        amp(False)                 # instant mute right after the phrase
+        amp(False)
         _state["talking"] = False
 
 
-def _frame(fb, img, col, tt, talking):
-    s = 1.0 + 0.05 * (0.5 + 0.5 * math.sin(6.2832 * tt / 3200.0))   # breathing
-    dx = (W - W * s) / 2.0
-    dy = (H - H * s) / 2.0
-    fb.draw_rectangle(0, 0, W, H, (8, 10, 16), fill=True)
-    fb.draw_image(img, int(round(dx)), int(round(dy)), s, s)
-    # blink ~every 3.4 s
-    if (not talking) and (tt % 3400) < 150:
-        for ox in (126, 194):
-            ex = int(dx + ox * s)
-            ey = int(dy + 126 * s)
-            fb.draw_rectangle(ex - int(34 * s), ey - int(26 * s),
-                              int(68 * s), int(52 * s), (42, 48, 60), fill=True)
-            fb.draw_line(ex - int(26 * s), ey, ex + int(26 * s), ey, col, thickness=5)
-    # talking mouth: cover the static mouth, draw an opening/closing bar
-    if talking:
-        mx = int(dx + 160 * s)
-        my = int(dy + 184 * s)
-        fb.draw_rectangle(mx - int(48 * s), my - int(24 * s),
-                          int(96 * s), int(48 * s), (34, 39, 52), fill=True)
-        mh = int((3 + 9 * abs(math.sin(tt / 70.0))) * s)
-        fb.draw_rectangle(mx - int(24 * s), my - mh, int(48 * s), 2 * mh, col, fill=True)
-    lcd.display(fb)
+def _breathe(closed, col, dur):
+    fb = image.Image(size=(W, H))
+    t0 = time.ticks_ms()
+    endt = int(dur * 1000)
+    while time.ticks_diff(time.ticks_ms(), t0) < endt:
+        tt = time.ticks_diff(time.ticks_ms(), t0)
+        s = 1.0 + 0.05 * (0.5 + 0.5 * math.sin(6.2832 * tt / 3200.0))
+        dx = (W - W * s) / 2.0
+        dy = (H - H * s) / 2.0
+        fb.draw_rectangle(0, 0, W, H, (8, 10, 16), fill=True)
+        fb.draw_image(closed, int(round(dx)), int(round(dy)), s, s)
+        if (tt % 3000) < 150:
+            for ox in (126, 194):
+                ex = int(dx + ox * s)
+                ey = int(dy + 126 * s)
+                fb.draw_rectangle(ex - int(34 * s), ey - int(26 * s),
+                                  int(68 * s), int(52 * s), (42, 48, 60), fill=True)
+                fb.draw_line(ex - int(26 * s), ey, ex + int(26 * s), ey, col, thickness=5)
+        lcd.display(fb)
+        time.sleep_ms(45)
+    del fb
+    gc.collect()
 
 
 def perform(emo):
     col = EYE_COL.get(emo, (70, 200, 255))
-    img = image.Image("/sd/f_%s.jpg" % emo)
-    fb = image.Image(size=(W, H))
+    closed = image.Image("/sd/f_%s.jpg" % emo)
+    talk = image.Image("/sd/f_%s_t.jpg" % emo)
     _state["talking"] = True
     try:
         _thread.start_new_thread(_speak, ("/sd/e_%s.wav" % emo,))
     except Exception as e:
         print("thread err:", e)
         _state["talking"] = False
-    t0 = time.ticks_ms()
-    while _state["talking"] or time.ticks_diff(time.ticks_ms(), t0) < int(SLOT_S * 1000):
-        tt = time.ticks_diff(time.ticks_ms(), t0)
-        _frame(fb, img, col, tt, _state["talking"])
+    # talking: swap mouth-open / mouth-closed by wall clock (robust to slow loop)
+    while _state["talking"]:
+        lcd.display(talk if (time.ticks_ms() // TALK_MS) % 2 else closed)
         time.sleep_ms(40)
-    del img
-    del fb
+    del talk
+    gc.collect()
+    # short breathing beat, then return
+    _breathe(closed, col, POST_BREATHE)
+    del closed
     gc.collect()
 
 
