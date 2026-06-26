@@ -1,0 +1,30 @@
+{
+    "configurations": [
+        {
+            "name": "K210 RISC-V",
+            "includePath": [
+                "${workspaceFolder}/src",
+                "C:/K210/sdk/kendryte-freertos-sdk-0.7.0/lib/arch/include",
+                "C:/K210/sdk/kendryte-freertos-sdk-0.7.0/lib/bsp/include",
+                "C:/K210/sdk/kendryte-freertos-sdk-0.7.0/lib/hal/include",
+                "C:/K210/sdk/kendryte-freertos-sdk-0.7.0/lib/utils/include",
+                "C:/K210/sdk/kendryte-freertos-sdk-0.7.0/lib/drivers/include",
+                "C:/K210/sdk/kendryte-freertos-sdk-0.7.0/third_party/freertos/include",
+                "C:/K210/sdk/kendryte-freertos-sdk-0.7.0/third_party/freertos/portable/GCC/RISC-V",
+                "C:/K210/sdk/kendryte-freertos-sdk-0.7.0/third_party/fatfs/source"
+            ],
+            "defines": [
+                "__riscv64",
+                "DEBUG=1",
+                "CONFIG_LOG_LEVEL=LOG_INFO",
+                "CONFIG_LOG_ENABLE"
+            ],
+            "compilerPath": "C:/K210/toolchain/kendryte-toolchain/bin/riscv64-unknown-elf-gcc.exe",
+            "cStandard": "c11",
+            "cppStandard": "c++17",
+            "intelliSenseMode": "gcc-arm",
+            "compileCommands": "${workspaceFolder}/build/compile_commands.json"
+        }
+    ],
+    "version": 4
+}

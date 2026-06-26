@@ -1,0 +1,23 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "UART Monitor (printf debug)",
+            "type": "node",
+            "request": "launch",
+            "program": "${workspaceFolder}/.vscode/uart_monitor.js",
+            "console": "integratedTerminal",
+            "presentation": {
+                "group": "debug",
+                "order": 1
+            }
+        }
+    ],
+    "_comment": [
+        "K210 has NO JTAG debug on Maix Dock without extra hardware.",
+        "Real GDB needs: J-Link / FTDI JTAG + OpenOCD with K210 support.",
+        "Until then: printf() to UARTHS (USB COM12) is your debugger.",
+        "Use 'UART Monitor' to watch printf output, OR open a serial terminal:",
+        "  py -m serial.tools.miniterm COM12 115200"
+    ]
+}

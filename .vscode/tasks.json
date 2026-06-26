@@ -1,0 +1,43 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build",
+            "type": "shell",
+            "command": "powershell -ExecutionPolicy Bypass -File tools/build.ps1",
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            },
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            },
+            "problemMatcher": {
+                "owner": "gcc",
+                "fileLocation": ["relative", "${workspaceFolder}"],
+                "pattern": {
+                    "regexp": "^(.*):(\\d+):(\\d+):\\s+(warning|error):\\s+(.*)$",
+                    "file": 1, "line": 2, "column": 3, "severity": 4, "message": 5
+                }
+            }
+        },
+        {
+            "label": "Build + Flash",
+            "type": "shell",
+            "command": "powershell -ExecutionPolicy Bypass -File tools/build.ps1 -Flash -Port COM12",
+            "group": "build",
+            "presentation": {
+                "reveal": "always",
+                "panel": "shared"
+            }
+        },
+        {
+            "label": "Clean",
+            "type": "shell",
+            "command": "Remove-Item -Recurse -Force build -ErrorAction SilentlyContinue; Write-Host 'Cleaned'",
+            "group": "build",
+            "presentation": { "reveal": "always" }
+        }
+    ]
+}
