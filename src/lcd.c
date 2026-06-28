@@ -194,3 +194,29 @@ void lcd_draw_picture(uint16_t x1, uint16_t y1, uint16_t width, uint16_t height,
     lcd_set_area(x1, y1, x1 + width - 1, y1 + height - 1);
     tft_write_word(ptr, width * height / 2);
 }
+
+static void lcd_draw_char_bg(uint16_t x, uint16_t y, char c, uint16_t fg, uint16_t bg)
+{
+    uint16_t cell[8 * 16];
+    for (int i = 0; i < 16; i++)
+    {
+        uint8_t data = ascii0816[(uint8_t)c * 16 + i];
+        for (int j = 0; j < 8; j++)
+        {
+            cell[i * 8 + j] = (data & 0x80) ? fg : bg;
+            data <<= 1;
+        }
+    }
+    lcd_set_area(x, y, x + 7, y + 15);
+    tft_write_half(cell, 8 * 16);
+}
+
+void lcd_draw_string_bg(uint16_t x, uint16_t y, char* str, uint16_t fg, uint16_t bg)
+{
+    while (*str)
+    {
+        lcd_draw_char_bg(x, y, *str, fg, bg);
+        str++;
+        x += 8;
+    }
+}

@@ -5,34 +5,60 @@
 #include "amp.h"
 #include "audio.h"
 #include "wifi.h"
+#include "sd.h"
+
+#define LX 20            /* left margin */
+#define LW 26            /* fixed line width (chars) — pads to clear old text */
+
+/* Opaque, fixed-width status line: repaints the whole row so updates never
+ * leave ghosts of the previous text. */
+static void line(int y, const char *s, uint16_t color)
+{
+    char buf[LW + 1];
+    int i = 0;
+    for (; s[i] && i < LW; i++) buf[i] = s[i];
+    for (; i < LW; i++)         buf[i] = ' ';
+    buf[LW] = 0;
+    lcd_draw_string_bg(LX, y, buf, color, BLACK);
+}
 
 int main(void)
 {
     printf("[main] start\n");
     amp_init();
-    printf("[main] amp ok\n");
 
     lcd_init();
     lcd_clear(BLACK);
-    lcd_draw_string(40, 40, "K210 LCD OK", WHITE);
+    line(20, "K210 V7s+  boot", WHITE);
+    line(44, "LCD  : OK", GREEN);
     printf("[main] lcd ok\n");
 
     audio_init();
-    lcd_draw_string(40, 70, "AUDIO: chime...", YELLOW);
+    line(68, "AUDIO: chime...", YELLOW);
     audio_test();
-    lcd_draw_string(40, 70, "AUDIO: done     ", GREEN);
+    line(68, "AUDIO: OK", GREEN);
     printf("[main] audio ok\n");
 
-    lcd_draw_string(40, 100, "WiFi: connecting...", YELLOW);
+    line(92, "SD   : mount...", YELLOW);
+    if (sd_mount()) {
+        int n = sd_list_root();
+        char b[LW + 1];
+        snprintf(b, sizeof(b), "SD   : OK (%d files)", n);
+        line(92, b, GREEN);
+    } else {
+        line(92, "SD   : FAILED", RED);
+    }
+    printf("[main] sd step done\n");
+
+    line(116, "WiFi : connecting...", YELLOW);
     char ip[20];
     if (wifi_connect(ip, sizeof(ip))) {
-        char line[40];
-        snprintf(line, sizeof(line), "WiFi OK  IP:%s", ip);
-        lcd_draw_string(40, 100, "                          ", BLACK);
-        lcd_draw_string(40, 100, line, GREEN);
-        lcd_draw_string(40, 130, "SSID: Fermiums_2.4", WHITE);
+        char b[LW + 1];
+        line(116, "WiFi : OK", GREEN);
+        snprintf(b, sizeof(b), "IP   : %s", ip);
+        line(140, b, GREEN);
     } else {
-        lcd_draw_string(40, 100, "WiFi: FAILED         ", RED);
+        line(116, "WiFi : FAILED", RED);
     }
     printf("[main] wifi step done\n");
 
