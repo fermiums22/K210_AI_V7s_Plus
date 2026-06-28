@@ -57,16 +57,13 @@ int main(void)
     }
     printf("[main] sd step done\n");
 
-    line(116, "CAM  : probe...", YELLOW);
+    line(116, "CAM  : start...", YELLOW);
     char cam[LW + 1];
-    if (cam_probe(cam, sizeof(cam)) >= 0) {
+    int cam_ok = cam_start(cam, sizeof(cam));
+    {
         char b[LW + 1];
         snprintf(b, sizeof(b), "CAM  : %s", cam);
-        line(116, b, GREEN);
-    } else {
-        char b[LW + 1];
-        snprintf(b, sizeof(b), "CAM  : %s", cam);
-        line(116, b, RED);
+        line(116, b, cam_ok >= 0 ? GREEN : RED);
     }
     printf("[main] cam step done\n");
 
@@ -81,6 +78,15 @@ int main(void)
         line(140, "WiFi : FAILED", RED);
     }
     printf("[main] wifi step done\n");
+
+    /* If the camera streams, show a live preview (fills the screen). Returns
+     * immediately if the sensor isn't streaming yet (minimal init) — then we
+     * just keep the status screen up. */
+    if (cam_ok >= 0) {
+        printf("[main] camera preview\n");
+        cam_preview_forever();
+        line(116, "CAM  : GC0328 (no stream)", YELLOW);
+    }
 
     for (;;)
         vTaskDelay(pdMS_TO_TICKS(1000));
