@@ -55,6 +55,35 @@ STM32 — за движение.
   ноги MUTE/SHDN выведены на **IO9/IO10**, прошивка глушит усилитель в простое.
   См. [docs/hardware.md](docs/hardware.md).
 
+## LCD-драйвер: откуда взят (НЕ переписывать вручную!)
+
+> Заметка для будущих правок / ИИ: дисплей **уже работает** на официальном драйвере из
+> Kendryte SDK. Не возвращайся к самописному bit-bang — он был тупиковой веткой.
+
+- **Источник:** репозиторий `kendryte/kendryte-freertos-demo`, папка **`lcd/`** (это и есть
+  сэмпл «lcd (RTOS)» из списка K210 SDK Samples в VisualGDB). Притащены файлы:
+  - [src/lcd.c](src/lcd.c), [src/lcd.h](src/lcd.h) — примитивы рисования, **verbatim** из SDK
+  - [src/jlt32009a.c](src/jlt32009a.c), [src/jlt32009a.h](src/jlt32009a.h) — транспорт
+  - [src/font.h](src/font.h) — шрифт 8×16, **verbatim**
+- **Транспорт — ключевой K210-трюк:** LCD висит на **SPI0 в OCTAL-режиме** (`SPI_FF_OCTAL` +
+  `SPI_AITM_AS_FRAME_FORMAT`) — 8 линий D0–D7 работают как параллельная 8080-шина, SCLK = строб
+  WR, CS = SPI0_SS3, а D/CX — отдельная нога на GPIOHS. Линии D0–D7 **внутри кристалла**
+  захардкожены на DVP-пады; маршрутизирует их `sysctl_set_spi0_dvp_data(1)`, а **не**
+  `fpioa_set_function` (см. комментарии в [src/pinout.h](src/pinout.h)).
+- **Доступ через device-manager:** `io_open("/dev/spi0")` / `io_open("/dev/gpio0")` +
+  `spi_get_device` / `spi_dev_*` / `spi_dev_fill`. Реализация драйверов — в `lib/bsp/device/`
+  и `lib/freertos/`, уже в дереве. SDK скачивать не нужно — он вендорнут целиком.
+- **Что адаптировано локально** (в апстрим-сэмпле этого нет, т.к. он полагается на
+  board-config `g_fpioa_cfg`/`bsp_pin_setup()`, который тут не подключён): в `tft_hard_init()`
+  добавлены FPIOA-разводка, `sysctl_set_spi0_dvp_data(1)`, аппаратный reset по RST и включение
+  подсветки. Распиновка вынесена в [src/project_cfg.h](src/project_cfg.h).
+- **API для прикладного кода:** `lcd_init()`, `lcd_clear(color)`,
+  `lcd_draw_picture(x,y,w,h,ptr)` (RGB565, по 2 пикселя в `uint32`), `lcd_draw_rectangle`,
+  `lcd_draw_string`. Старого API (`lcd_fill`, `lcd_set_window`, `rgb()`) **больше нет**.
+- **Оговорка по контроллеру:** init-таблица в `lcd_init()` минимальна (SW reset → sleep off →
+  COLMOD 0x55 → MADCTL → display on) и универсальна для ILI9341/ST7789/NT35310. Если поедут
+  цвета (BGR/RGB) или ориентация — правится **только** байтом MADCTL, транспорт трогать не надо.
+
 ## Ближайшие цели
 
 1. ~~**Bring-up платы**: драйвер, прошивка MaixPy, REPL, камера+экран.~~ ✅ сделано.

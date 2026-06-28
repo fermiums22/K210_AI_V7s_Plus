@@ -13,12 +13,20 @@ include("${CMAKE_SOURCE_DIR}/cmake/common.cmake")
 
 project(robot_show C CXX ASM)
 
+# ── Global includes — must come BEFORE any add_subdirectory ───────────────────
+# SDK libs reference <platform.h>, <encoding.h> etc. from lib/arch/include
+include_directories(
+    "${CMAKE_SOURCE_DIR}/lib/arch/include"
+    "${CMAKE_SOURCE_DIR}/lib/utils/include"
+    "${CMAKE_SOURCE_DIR}/lib"
+    "${CMAKE_SOURCE_DIR}/third_party"
+)
+
 # ── Third-party ────────────────────────────────────────────────────────────────
 add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/fatfs" "${CMAKE_BINARY_DIR}/fatfs")
 add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/lwip"  "${CMAKE_BINARY_DIR}/lwip")
 
 # ── SDK libraries ──────────────────────────────────────────────────────────────
-include_directories("${CMAKE_SOURCE_DIR}/third_party")
 add_subdirectory("${CMAKE_SOURCE_DIR}/lib/hal"      "${CMAKE_BINARY_DIR}/hal")
 add_subdirectory("${CMAKE_SOURCE_DIR}/lib/freertos" "${CMAKE_BINARY_DIR}/freertos")
 add_subdirectory("${CMAKE_SOURCE_DIR}/lib/bsp"      "${CMAKE_BINARY_DIR}/bsp")
@@ -48,12 +56,14 @@ target_include_directories(robot_show PRIVATE
 )
 
 target_link_libraries(robot_show
-    posix drivers bsp freertos hal fatfs lwipcore
+    -Wl,--start-group
+    m freertos atomic bsp c stdc++ drivers hal posix fatfs lwipcore
+    -Wl,--end-group
 )
 
 # ── Binary for kflash ──────────────────────────────────────────────────────────
 add_custom_command(TARGET robot_show POST_BUILD
     COMMAND ${CMAKE_OBJCOPY} -O binary robot_show robot_show.bin
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    COMMENT "→ robot_show.bin ready for kflash"
+    COMMENT "-> robot_show.bin ready for kflash"
 )
