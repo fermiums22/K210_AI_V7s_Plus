@@ -84,6 +84,20 @@ STM32 — за движение.
   COLMOD 0x55 → MADCTL → display on) и универсальна для ILI9341/ST7789/NT35310. Если поедут
   цвета (BGR/RGB) или ориентация — правится **только** байтом MADCTL, транспорт трогать не надо.
 
+## Аудио и Wi-Fi (C-прошивка)
+
+- **Аудио** — [src/audio.c](src/audio.c): I2S0 TX → PT8211 DAC → PAM8403. Device-manager
+  (`/dev/i2s0`, `i2s_config_as_render` + `io_write`). DAC висит на пад-линии **OUT_D1**
+  (IO34, не D0!), поэтому маска каналов `0x0C`. Усилитель глушится в простое ([src/amp.c](src/amp.c),
+  MUTE/SHDN на IO9/IO10). Выравнивание I2S — `I2S_AM_RIGHT` (PT8211 right-justified).
+- **Wi-Fi** — [src/wifi.c](src/wifi.c): ESP8285 по AT поверх UART2 (`/dev/uart2`),
+  `EN`-power-cycle на IO8 → `AT` → `CWMODE=1` → `CWJAP` → `CIFSR`, IP выводится на LCD.
+  - ⚠️ **Распиновка UART зеркальна силкскрину:** IO6 = `UART2_RX` (K210 RX), IO7 = `UART2_TX`
+    (K210 TX). Метки «TX/RX» на плате — со стороны ESP. См. [src/pinout.h](src/pinout.h).
+  - ⚠️ **Имя устройства:** hw UART2 = `/dev/uart2` (драйверы `uart0/1/2` — это UART1/2/3).
+- **Креды Wi-Fi:** в [src/wifi_cfg.h](src/wifi_cfg.h) — **gitignored**. Для сборки скопируй
+  [src/wifi_cfg.example.h](src/wifi_cfg.example.h) → `src/wifi_cfg.h` и впиши SSID/пароль.
+
 ## Ближайшие цели
 
 1. ~~**Bring-up платы**: драйвер, прошивка MaixPy, REPL, камера+экран.~~ ✅ сделано.

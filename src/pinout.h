@@ -34,9 +34,9 @@
  *  CLK  IO27 → SPI1_SCLK
  *  CS   IO29 → GPIOHS29  software CS
  *
- * WiFi ESP8285 — UART2
- *  TX   IO6  → UART2_TX  K210 → ESP
- *  RX   IO7  → UART2_RX  ESP → K210
+ * WiFi ESP8285 — UART2 (labels below are ESP-side; K210-side is mirrored!)
+ *  IO6  → UART2_RX  K210 RX  (ESP TX → K210)   [silk "TX"]
+ *  IO7  → UART2_TX  K210 TX  (K210 → ESP RX)   [silk "RX"]
  *  EN   IO8  → GPIO0     LOW=reset, HIGH=run
  *
  * Debug UART (USB CH340, UARTHS)

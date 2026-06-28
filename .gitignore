@@ -15,9 +15,10 @@
 *.elf
 *.map
 
-# Секреты: Wi-Fi креды живут только на плате в /flash/wifi.json, не в git
+# Секреты: Wi-Fi креды — в src/wifi_cfg.h (генерится локально) и /flash/wifi.json, не в git
 wifi.json
 **/wifi.json
+src/wifi_cfg.h
 
 # Системное
 Thumbs.db
