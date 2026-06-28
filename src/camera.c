@@ -17,7 +17,10 @@
  */
 #include "camera.h"
 #include "lcd.h"
+#include "gc0328_regs.h"
 #include <devices.h>
+#include <dvp.h>
+#include <platform.h>
 #include <fpioa.h>
 #include <FreeRTOS.h>
 #include <task.h>
@@ -25,7 +28,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#define GC0328_ADDR  0x42      /* 0x21 << 1, 8-bit SCCB write address */
+#define GC0328_ADDR  0x42      /* device-manager SCCB read works at 0x42 (8-bit) */
 #define CAM_W        320
 #define CAM_H        240
 
@@ -52,6 +55,7 @@ static void on_frame(dvp_frame_event_t event, void *userdata)
         s_frame_done = 1;
 }
 
+
 int cam_start(char *name_out, int len)
 {
     cam_pins();
@@ -64,7 +68,7 @@ int cam_start(char *name_out, int len)
     }
 
     dvp_xclk_set_clock_rate(s_dvp, 24000000);
-    dvp_config(s_dvp, CAM_W, CAM_H, false);         /* starts XCLK */
+    dvp_config(s_dvp, CAM_W, CAM_H, true);          /* auto_enable: continuous */
 
     dvp_set_signal(s_dvp, DVP_SIG_POWER_DOWN, false);
     usleep(20 * 1000);
@@ -92,39 +96,51 @@ int cam_start(char *name_out, int len)
         return -1;
     }
 
-    /* Minimal GC0328 init for a live RGB565 frame. */
-    sccb_dev_write_byte(gc, 0xfe, 0x80);   /* soft reset */
-    usleep(50 * 1000);
-    sccb_dev_write_byte(gc, 0xfe, 0x00);   /* page 0 */
-    sccb_dev_write_byte(gc, 0x4f, 0x01);   /* AEC enable (auto exposure) */
-    sccb_dev_write_byte(gc, 0x42, 0x00);
-    sccb_dev_write_byte(gc, 0x44, 0x06);   /* output format = RGB565 */
-    sccb_dev_write_byte(gc, 0xf1, 0x07);   /* output enable (Y/Cb/Cr pads) */
-    sccb_dev_write_byte(gc, 0xf2, 0x01);   /* sync output enable */
+    /* Full vendor register init, then QVGA 320x240 windowing. The default
+     * table ends with output-enable (0xf1=0x07, 0xf2=0x01); 0xff in the reg
+     * column means "delay N ms".
+     *
+     * KNOWN BLOCKER: with this vendored SDK, device-manager SCCB *reads* work
+     * at 8-bit addr 0x42 (id reads 0x9d) but *writes* do not take effect — a
+     * write-then-readback returns 0x00/0xff and even corrupts the next read.
+     * So this init never reaches the sensor, output stays disabled, the DVP
+     * sees no VSYNC and never completes a frame (verified: sts FRAME_FINISH
+     * never sets). Fixing the SCCB write path (correct addr/timing, likely a
+     * direct-register impl like the standalone dvp_sccb_send_data) is the
+     * remaining work to get a live image. Register tables in gc0328_regs.h. */
+    for (int i = 0; sensor_default_regs[i][0]; i++) {
+        if (sensor_default_regs[i][0] == 0xff) { usleep(sensor_default_regs[i][1] * 1000); continue; }
+        sccb_dev_write_byte(gc, sensor_default_regs[i][0], sensor_default_regs[i][1]);
+    }
+    for (int i = 0; qvga_config[i][0]; i++)
+        sccb_dev_write_byte(gc, qvga_config[i][0], qvga_config[i][1]);
 
     /* DVP capture pipeline → s_fb. */
     /* Output index 1 is the display path (RGB565 → rgb_addr); index 0 is the
      * AI path and only accepts RGB24-planar (asserts otherwise → hang). */
-    dvp_set_on_frame_event(s_dvp, on_frame, NULL);
-    dvp_set_frame_event_enable(s_dvp, VIDEO_FE_END, true);
     /* Configure BOTH outputs like the working demo: 0=AI (RGB24 planar),
-     * 1=display (RGB565). The DMA pipeline may not run with display alone. */
+     * 1=display (RGB565). */
     dvp_set_output_attributes(s_dvp, 0, VIDEO_FMT_RGB24_PLANAR, s_ai);
     dvp_set_output_enable(s_dvp, 0, true);
     dvp_set_output_attributes(s_dvp, 1, VIDEO_FMT_RGB565, s_fb);
     dvp_set_output_enable(s_dvp, 1, true);
 
+    dvp_set_on_frame_event(s_dvp, on_frame, NULL);
+    dvp_set_frame_event_enable(s_dvp, VIDEO_FE_BEGIN, true);
+    dvp_set_frame_event_enable(s_dvp, VIDEO_FE_END, true);
+    dvp_enable_frame(s_dvp);                         /* kick off continuous capture */
+
     snprintf(name_out, len, "GC0328 id=0x%02x", id);
     return id;
 }
 
-/* Capture one frame into s_fb; returns 1 if the DVP finished it. */
+/* Wait for the next finished frame in s_fb (continuous/auto capture is already
+ * running from cam_start). Returns 1 if a frame completed, 0 on timeout. */
 static int cam_grab(void)
 {
     s_frame_done = 0;
-    dvp_enable_frame(s_dvp);
     int t = 0;
-    while (!s_frame_done && t++ < 200)
+    while (!s_frame_done && t++ < 300)
         vTaskDelay(pdMS_TO_TICKS(1));
     return s_frame_done;
 }
