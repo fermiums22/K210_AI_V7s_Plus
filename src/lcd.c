@@ -42,7 +42,9 @@ void lcd_init(void)
     tft_write_command(PIXEL_FORMAT_SET);
     data = 0x55;
     tft_write_byte(&data, 1);
-    lcd_set_direction(DIR_YX_RLUD);
+    /* LRUD (left-to-right) un-mirrors the X axis vs the demo's RLUD, which
+     * showed text mirrored on this panel/FPC orientation. */
+    lcd_set_direction(DIR_YX_LRUD);
     tft_write_command(DISPALY_ON);
 }
 

@@ -6,6 +6,7 @@
 #include "audio.h"
 #include "wifi.h"
 #include "sd.h"
+#include "camera.h"
 
 #define LX 20            /* left margin */
 #define LW 26            /* fixed line width (chars) — pads to clear old text */
@@ -28,6 +29,12 @@ int main(void)
     amp_init();
 
     lcd_init();
+    /* Wipe stale GRAM in BOTH mirror orientations: an orientation change
+     * between flashes (without a power cycle) shifts the visible window and
+     * leaves ghost text the single-orientation clear can't reach. */
+    lcd_set_direction(DIR_YX_RLUD);
+    lcd_clear(BLACK);
+    lcd_set_direction(DIR_YX_LRUD);
     lcd_clear(BLACK);
     line(20, "K210 V7s+  boot", WHITE);
     line(44, "LCD  : OK", GREEN);
@@ -50,15 +57,28 @@ int main(void)
     }
     printf("[main] sd step done\n");
 
-    line(116, "WiFi : connecting...", YELLOW);
+    line(116, "CAM  : probe...", YELLOW);
+    char cam[LW + 1];
+    if (cam_probe(cam, sizeof(cam)) >= 0) {
+        char b[LW + 1];
+        snprintf(b, sizeof(b), "CAM  : %s", cam);
+        line(116, b, GREEN);
+    } else {
+        char b[LW + 1];
+        snprintf(b, sizeof(b), "CAM  : %s", cam);
+        line(116, b, RED);
+    }
+    printf("[main] cam step done\n");
+
+    line(140, "WiFi : connecting...", YELLOW);
     char ip[20];
     if (wifi_connect(ip, sizeof(ip))) {
         char b[LW + 1];
-        line(116, "WiFi : OK", GREEN);
+        line(140, "WiFi : OK", GREEN);
         snprintf(b, sizeof(b), "IP   : %s", ip);
-        line(140, b, GREEN);
+        line(164, b, GREEN);
     } else {
-        line(116, "WiFi : FAILED", RED);
+        line(140, "WiFi : FAILED", RED);
     }
     printf("[main] wifi step done\n");
 
