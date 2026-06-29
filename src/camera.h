@@ -7,4 +7,5 @@
  * cam_preview_forever(): capture frames and blit them to the LCD; never returns.
  */
 int  cam_start(char *name_out, int len);
+int  cam_capture_rgb565(const uint16_t **pixels, int *w, int *h);
 void cam_preview_forever(void);

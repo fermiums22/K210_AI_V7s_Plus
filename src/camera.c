@@ -22,23 +22,29 @@
 #include <dvp.h>
 #include <platform.h>
 #include <fpioa.h>
+#include <sysctl.h>
 #include <FreeRTOS.h>
 #include <task.h>
 #include <unistd.h>
 #include <stdio.h>
 #include <string.h>
 
-#define GC0328_ADDR  0x42      /* device-manager SCCB read works at 0x42 (8-bit) */
+#define GC0328_ADDR  0x42      /* This FreeRTOS SCCB wrapper reads GC0328 with the 8-bit address form. */
 #define CAM_W        320
 #define CAM_H        240
 
 static handle_t s_dvp, s_sccb;
 static uint32_t s_fb[CAM_W * CAM_H / 2] __attribute__((aligned(64)));  /* RGB565 display */
+static uint32_t s_snap[CAM_W * CAM_H / 2] __attribute__((aligned(64)));/* stable RGB565 snapshot */
 static uint8_t  s_ai[CAM_W * CAM_H * 3] __attribute__((aligned(64)));  /* RGB24 planar (AI) */
 static volatile int s_frame_done;
 
 static void cam_pins(void)
 {
+    /* Maix Dock routes the camera/LCD FPC banks at 1.8 V in the vendor demos. */
+    sysctl_set_power_mode(SYSCTL_POWER_BANK6, SYSCTL_POWER_V18);
+    sysctl_set_power_mode(SYSCTL_POWER_BANK7, SYSCTL_POWER_V18);
+
     fpioa_set_function(40, FUNC_SCCB_SDA);
     fpioa_set_function(41, FUNC_SCCB_SCLK);
     fpioa_set_function(42, FUNC_CMOS_RST);
@@ -69,6 +75,8 @@ int cam_start(char *name_out, int len)
 
     dvp_xclk_set_clock_rate(s_dvp, 24000000);
     dvp_config(s_dvp, CAM_W, CAM_H, true);          /* auto_enable: continuous */
+    volatile dvp_t *dvp = (volatile dvp_t *)DVP_BASE_ADDR;
+    dvp->dvp_cfg = (dvp->dvp_cfg & ~DVP_CFG_FORMAT_MASK) | DVP_CFG_YUV_FORMAT;
 
     dvp_set_signal(s_dvp, DVP_SIG_POWER_DOWN, false);
     usleep(20 * 1000);
@@ -100,20 +108,18 @@ int cam_start(char *name_out, int len)
      * table ends with output-enable (0xf1=0x07, 0xf2=0x01); 0xff in the reg
      * column means "delay N ms".
      *
-     * KNOWN BLOCKER: with this vendored SDK, device-manager SCCB *reads* work
-     * at 8-bit addr 0x42 (id reads 0x9d) but *writes* do not take effect — a
-     * write-then-readback returns 0x00/0xff and even corrupts the next read.
-     * So this init never reaches the sensor, output stays disabled, the DVP
-     * sees no VSYNC and never completes a frame (verified: sts FRAME_FINISH
-     * never sets). Fixing the SCCB write path (correct addr/timing, likely a
-     * direct-register impl like the standalone dvp_sccb_send_data) is the
-     * remaining work to get a live image. Register tables in gc0328_regs.h. */
+     * This wrapper reads the sensor with the 8-bit address form. */
+    sccb_dev_write_byte(gc, 0xfe, 0x00);
+    printf("[cam] page0 id readback=0x%02x\n", sccb_dev_read_byte(gc, 0xF0));
     for (int i = 0; sensor_default_regs[i][0]; i++) {
         if (sensor_default_regs[i][0] == 0xff) { usleep(sensor_default_regs[i][1] * 1000); continue; }
         sccb_dev_write_byte(gc, sensor_default_regs[i][0], sensor_default_regs[i][1]);
+        usleep(1000);
     }
-    for (int i = 0; qvga_config[i][0]; i++)
+    for (int i = 0; qvga_config[i][0]; i++) {
         sccb_dev_write_byte(gc, qvga_config[i][0], qvga_config[i][1]);
+        usleep(1000);
+    }
 
     /* DVP capture pipeline → s_fb. */
     /* Output index 1 is the display path (RGB565 → rgb_addr); index 0 is the
@@ -143,6 +149,16 @@ static int cam_grab(void)
     while (!s_frame_done && t++ < 300)
         vTaskDelay(pdMS_TO_TICKS(1));
     return s_frame_done;
+}
+
+int cam_capture_rgb565(const uint16_t **pixels, int *w, int *h)
+{
+    int ok = cam_grab();
+    memcpy(s_snap, s_fb, sizeof(s_snap));
+    *pixels = (const uint16_t *)s_snap;
+    *w = CAM_W;
+    *h = CAM_H;
+    return ok;
 }
 
 void cam_preview_forever(void)

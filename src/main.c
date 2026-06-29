@@ -74,6 +74,15 @@ int main(void)
         line(140, "WiFi : OK", GREEN);
         snprintf(b, sizeof(b), "IP   : %s", ip);
         line(164, b, GREEN);
+        const uint16_t *pixels;
+        int w, h;
+        line(188, "SNAP : capture...", YELLOW);
+        int got_frame = cam_capture_rgb565(&pixels, &w, &h);
+        line(188, got_frame ? "SNAP : push PC" : "SNAP : push noframe", got_frame ? GREEN : YELLOW);
+        wifi_push_bmp_snapshot("192.168.0.10", 9090, pixels, w, h);
+        line(188, got_frame ? "SNAP : GET :8080" : "SNAP : no frame/serve", got_frame ? GREEN : YELLOW);
+        wifi_serve_bmp_snapshot(pixels, w, h, 8080);
+        line(188, "SNAP : done", GREEN);
     } else {
         line(140, "WiFi : FAILED", RED);
     }
