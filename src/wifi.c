@@ -11,17 +11,24 @@
 #include "wifi_cfg.h"
 #include "pinout.h"
 #include <devices.h>
+#include <filesystem.h>
 #include <fpioa.h>
 #include <gpio.h>
 #include <platform.h>
 #include <sysctl.h>
+#include <ff.h>
 #include <unistd.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stdlib.h>
+#include "log.h"
 
 static handle_t uart;
 static char     acc[1024];          /* response accumulator */
+
+#define ESP_BOOT_BAUD 115200
+#define ESP_FAST_BAUD 460800
 
 static volatile gpio_t *const REG_GPIO = (volatile gpio_t *)GPIO_BASE_ADDR;
 
@@ -70,6 +77,32 @@ static int esp_cmd(const char *cmd, const char *expect, int timeout_ms)
     return esp_expect(expect, timeout_ms);
 }
 
+static int esp_set_fast_baud(void)
+{
+    char cmd[64];
+
+    snprintf(cmd, sizeof(cmd), "AT+UART_CUR=%d,8,1,0,0", ESP_FAST_BAUD);
+    if (esp_cmd(cmd, "OK", 1000) != 1) {
+        LOGF("[wifi] fast UART rejected: <<%s>>", acc);
+        return 0;
+    }
+
+    usleep(50 * 1000);
+    uart_config(uart, ESP_FAST_BAUD, 8, UART_STOP_1, UART_PARITY_NONE);
+    usleep(50 * 1000);
+
+    for (int i = 0; i < 5; i++) {
+        if (esp_cmd("AT", "OK", 500) == 1) {
+            LOGF("[wifi] ESP UART %d", ESP_FAST_BAUD);
+            return 1;
+        }
+    }
+
+    uart_config(uart, ESP_BOOT_BAUD, 8, UART_STOP_1, UART_PARITY_NONE);
+    LOG("[wifi] fast UART handshake failed, back to 115200");
+    return 0;
+}
+
 static int esp_send_bytes(int link_id, const uint8_t *data, int len)
 {
     char cmd[40];
@@ -80,6 +113,18 @@ static int esp_send_bytes(int link_id, const uint8_t *data, int len)
         return 0;
     io_write(uart, data, len);
     return esp_expect("SEND OK", 10000) == 1;
+}
+
+static int esp_send_plain(const char *s)
+{
+    int len = (int)strlen(s);
+    char cmd[32];
+
+    snprintf(cmd, sizeof(cmd), "AT+CIPSEND=%d", len);
+    if (esp_cmd(cmd, ">", 2000) != 1)
+        return 0;
+    esp_write(s);
+    return esp_expect("SEND OK", 3000) == 1;
 }
 
 static void put_u16le(uint8_t *p, uint16_t v)
@@ -94,6 +139,119 @@ static void put_u32le(uint8_t *p, uint32_t v)
     p[1] = (uint8_t)(v >> 8);
     p[2] = (uint8_t)(v >> 16);
     p[3] = (uint8_t)(v >> 24);
+}
+
+static int esp_read_byte_timeout(uint8_t *out, int timeout_ms)
+{
+    int waited = 0;
+    while (waited < timeout_ms) {
+        int r = io_read(uart, out, 1);
+        if (r == 1)
+            return 1;
+        usleep(10 * 1000);
+        waited += 10;
+    }
+    return 0;
+}
+
+static int esp_tcp_read_byte(int timeout_ms)
+{
+    static int ipd_left = 0;
+    uint8_t c;
+
+    if (ipd_left > 0) {
+        if (!esp_read_byte_timeout(&c, timeout_ms))
+            return -1;
+        ipd_left--;
+        return c;
+    }
+
+    char match[] = "+IPD,";
+    int mi = 0;
+    int waited = 0;
+    while (waited < timeout_ms) {
+        if (!esp_read_byte_timeout(&c, 100)) {
+            waited += 100;
+            continue;
+        }
+        if (c == (uint8_t)match[mi]) {
+            mi++;
+            if (match[mi] == 0)
+                break;
+        } else {
+            mi = (c == '+') ? 1 : 0;
+        }
+    }
+    if (match[mi] != 0)
+        return -1;
+
+    char hdr[24];
+    int n = 0;
+    while (n < (int)sizeof(hdr) - 1) {
+        if (!esp_read_byte_timeout(&c, 2000))
+            return -1;
+        if (c == ':')
+            break;
+        hdr[n++] = (char)c;
+    }
+    hdr[n] = 0;
+
+    char *last = strrchr(hdr, ',');
+    const char *len_s = last ? last + 1 : hdr;
+    ipd_left = atoi(len_s);
+    if (ipd_left <= 0)
+        return -1;
+
+    if (!esp_read_byte_timeout(&c, timeout_ms))
+        return -1;
+    ipd_left--;
+    return c;
+}
+
+static int esp_tcp_read_line(char *out, int out_len, int timeout_ms)
+{
+    int n = 0;
+    while (n < out_len - 1) {
+        int c = esp_tcp_read_byte(timeout_ms);
+        if (c < 0)
+            return 0;
+        if (c == '\n')
+            break;
+        if (c != '\r')
+            out[n++] = (char)c;
+    }
+    out[n] = 0;
+    return 1;
+}
+
+static void make_parent_dirs(const char *rel_path)
+{
+    char path[160] = "0:/";
+    char alt[160] = "0/";
+    int p = 3;
+    int a = 2;
+    for (const char *s = rel_path; *s && p < (int)sizeof(path) - 2; s++) {
+        char c = *s == '\\' ? '/' : *s;
+        if (c == '/') {
+            path[p] = 0;
+            alt[a] = 0;
+            if (p > 3)
+                f_mkdir(path);
+            if (a > 2)
+                f_mkdir(alt);
+        }
+        path[p++] = c;
+        alt[a++] = c;
+    }
+}
+
+static int safe_rel_path(const char *s)
+{
+    if (!s[0] || s[0] == '/' || s[0] == '\\')
+        return 0;
+    if (strstr(s, ".."))
+        return 0;
+    return 1;
 }
 
 static int esp_send_bmp(int link_id, const uint16_t *rgb565, int w, int h)
@@ -119,7 +277,7 @@ static int esp_send_bmp(int link_id, const uint16_t *rgb565, int w, int h)
 
     uint8_t row[320 * 3];
     if (w * 3 > (int)sizeof(row)) {
-        printf("[wifi] image row too wide\n");
+        LOG("[wifi] image row too wide");
         return 0;
     }
 
@@ -139,7 +297,7 @@ static int esp_send_bmp(int link_id, const uint16_t *rgb565, int w, int h)
             return 0;
     }
 
-    printf("[wifi] snapshot sent (%d bytes BMP)\n", bmp_bytes);
+    LOGF("[wifi] snapshot sent (%d bytes BMP)", bmp_bytes);
     return 1;
 }
 
@@ -162,7 +320,7 @@ bool wifi_connect(char *ip_out, int ip_len)
     wifi_init_pins();
     uart = io_open("/dev/uart2");                    /* == hw UART2 */
     configASSERT(uart);
-    uart_config(uart, 115200, 8, UART_STOP_1, UART_PARITY_NONE);
+    uart_config(uart, ESP_BOOT_BAUD, 8, UART_STOP_1, UART_PARITY_NONE);
 
     /* Power-cycle the ESP so it cold-boots from any stuck AT state
      * (timing matches the working MaixPy bring-up: 300 ms low, 1 s settle). */
@@ -177,26 +335,27 @@ bool wifi_connect(char *ip_out, int ip_len)
     for (int i = 0; i < 6 && ok != 1; i++)
         ok = esp_cmd("AT", "OK", 500);
     if (ok != 1) {
-        printf("[wifi] no AT response\n");
+        LOG("[wifi] no AT response");
         return false;
     }
 
     esp_cmd("ATE0", "OK", 1000);                     /* echo off */
+    esp_set_fast_baud();
     esp_cmd("AT+CWMODE=1", "OK", 2000);              /* station mode */
 
     char cmd[160];
     snprintf(cmd, sizeof(cmd), "AT+CWJAP=\"%s\",\"%s\"", WIFI_SSID, WIFI_PASS);
-    printf("[wifi] joining %s ...\n", WIFI_SSID);
+    LOGF("[wifi] joining %s ...", WIFI_SSID);
     int jr = esp_cmd(cmd, "OK", 20000);              /* join can take a while */
-    printf("[wifi] CWJAP rc=%d resp=<<%s>>\n", jr, acc);
+    LOGF("[wifi] CWJAP rc=%d resp=<<%s>>", jr, acc);
     if (jr != 1) {
-        printf("[wifi] CWJAP failed\n");
+        LOG("[wifi] CWJAP failed");
         return false;
     }
 
     /* Query the assigned STA IP: line is +CIFSR:STAIP,"x.x.x.x" */
     int cr = esp_cmd("AT+CIFSR", "OK", 3000);
-    printf("[wifi] CIFSR rc=%d resp=<<%s>>\n", cr, acc);
+    LOGF("[wifi] CIFSR rc=%d resp=<<%s>>", cr, acc);
     if (cr != 1)
         return false;
 
@@ -215,8 +374,156 @@ bool wifi_connect(char *ip_out, int ip_len)
         ip_out[0] = 0;
         return false;
     }
-    printf("[wifi] connected ip=%s\n", ip_out);
+    LOGF("[wifi] connected ip=%s", ip_out);
     return true;
+}
+
+bool wifi_pull_files(const char *host, int port)
+{
+    if (!uart || !host)
+        return false;
+
+    esp_cmd("AT+CIPSERVER=0", "OK", 1000);
+    esp_cmd("AT+CIPMUX=0", "OK", 2000);
+
+    char cmd[96];
+    snprintf(cmd, sizeof(cmd), "AT+CIPSTART=\"TCP\",\"%s\",%d", host, port);
+    if (esp_cmd(cmd, "OK", 12000) != 1 && !strstr(acc, "ALREADY CONNECTED")) {
+        LOGF("[wifi] pull CIPSTART failed: <<%s>>", acc);
+        return false;
+    }
+
+    LOGF("[wifi] pulling files from %s:%d", host, port);
+    if (esp_send_plain("RDY\n")) {
+        LOG("[wifi] pull ready sent");
+    } else {
+        LOGF("[wifi] pull ready failed: <<%s>>", acc);
+        esp_cmd("AT+CIPCLOSE", "OK", 2000);
+        return false;
+    }
+
+    int count = 0;
+    int ok = 0;
+    int blank_lines = 0;
+    for (;;) {
+        char name[96];
+        char size_line[24];
+        if (!esp_tcp_read_line(name, sizeof(name), 30000)) {
+            LOG("[wifi] pull: no name");
+            break;
+        }
+        if (name[0] == 0) {
+            blank_lines++;
+            LOG("[wifi] pull: blank line");
+            if (blank_lines > 4)
+                break;
+            continue;
+        }
+        blank_lines = 0;
+        if (strcmp(name, "EOF") == 0) {
+            LOG("[wifi] pull: EOF");
+            ok = 1;
+            break;
+        }
+        if (!safe_rel_path(name)) {
+            LOGF("[wifi] pull: bad path %s", name);
+            break;
+        }
+        if (!esp_tcp_read_line(size_line, sizeof(size_line), 5000)) {
+            LOGF("[wifi] pull: no size for %s", name);
+            break;
+        }
+
+        int size = atoi(size_line);
+        char padded_line[24];
+        if (!esp_tcp_read_line(padded_line, sizeof(padded_line), 5000)) {
+            LOGF("[wifi] pull: no padded size for %s", name);
+            break;
+        }
+
+        int padded = atoi(padded_line);
+        LOGF("[wifi] pull file: %s size=%d padded=%d", name, size, padded);
+        if (size < 0) {
+            LOGF("[wifi] pull: bad size %s", size_line);
+            break;
+        }
+        if (padded < size) {
+            LOGF("[wifi] pull: bad padded size %s", padded_line);
+            break;
+        }
+
+        make_parent_dirs(name);
+        char path[128];
+        snprintf(path, sizeof(path), "/fs/0/%s", name);
+        LOGF("[wifi] open write: %s", path);
+        handle_t f = filesystem_file_open(path, FILE_ACCESS_WRITE, FILE_MODE_CREATE_ALWAYS);
+        if (!f) {
+            LOGF("[wifi] pull: open failed %s", path);
+            break;
+        }
+        LOGF("[wifi] open ok: %s", path);
+        if (!esp_send_plain("GO\n")) {
+            filesystem_file_close(f);
+            LOGF("[wifi] go ack failed for %s", name);
+            return false;
+        }
+
+        uint8_t buf[512];
+        int got = 0;
+        int next_log = 32768;
+        while (got < padded) {
+            int chunk = padded - got;
+            if (chunk > (int)sizeof(buf))
+                chunk = sizeof(buf);
+            for (int i = 0; i < chunk; i++) {
+                int c = esp_tcp_read_byte(10000);
+                if (c < 0) {
+                    filesystem_file_close(f);
+                    LOGF("[wifi] pull: short %s %d/%d", name, got, padded);
+                    return false;
+                }
+                buf[i] = (uint8_t)c;
+            }
+            if (got < size) {
+                int write_len = size - got;
+                if (write_len > chunk)
+                    write_len = chunk;
+                int wr = filesystem_file_write(f, buf, write_len);
+                if (wr != write_len) {
+                    filesystem_file_close(f);
+                    LOGF("[wifi] pull: write failed %s", name);
+                    return false;
+                }
+            }
+            got += chunk;
+            if (got >= next_log || got == padded) {
+                int written = got > size ? size : got;
+                LOGF("[wifi] write progress: %s %d/%d", name, written, size);
+                next_log += 32768;
+            }
+            if ((got % 2048) == 0 || got == padded) {
+                if (!esp_send_plain("B\n")) {
+                    filesystem_file_close(f);
+                    LOGF("[wifi] block ack failed for %s", name);
+                    return false;
+                }
+            }
+        }
+
+        filesystem_file_close(f);
+        count++;
+        LOGF("[wifi] recv %s %d", name, size);
+        if (!esp_send_plain("OK\n")) {
+            LOGF("[wifi] ack failed after %s: <<%s>>", name, acc);
+            return false;
+        }
+
+    }
+
+    esp_send_plain("DONE\n");
+    esp_cmd("AT+CIPCLOSE", "OK", 2000);
+    LOGF("[wifi] pull done: %d files", count);
+    return ok && count > 0;
 }
 
 bool wifi_serve_bmp_snapshot(const uint16_t *rgb565, int w, int h, int port)
@@ -227,16 +534,16 @@ bool wifi_serve_bmp_snapshot(const uint16_t *rgb565, int w, int h, int port)
     char cmd[48];
     esp_cmd("AT+CIPSERVER=0", "OK", 2000);
     if (esp_cmd("AT+CIPMUX=1", "OK", 2000) != 1) {
-        printf("[wifi] CIPMUX failed: <<%s>>\n", acc);
+        LOGF("[wifi] CIPMUX failed: <<%s>>", acc);
         return false;
     }
     snprintf(cmd, sizeof(cmd), "AT+CIPSERVER=1,%d", port);
     if (esp_cmd(cmd, "OK", 3000) != 1) {
-        printf("[wifi] CIPSERVER failed: <<%s>>\n", acc);
+        LOGF("[wifi] CIPSERVER failed: <<%s>>", acc);
         return false;
     }
 
-    printf("[wifi] snapshot server ready on port %d\n", port);
+    LOGF("[wifi] snapshot server ready on port %d", port);
     int link_id = -1;
     int waited = 0;
     acc[0] = 0;
@@ -261,7 +568,7 @@ bool wifi_serve_bmp_snapshot(const uint16_t *rgb565, int w, int h, int port)
     }
 
     if (link_id < 0) {
-        printf("[wifi] snapshot server timeout\n");
+        LOG("[wifi] snapshot server timeout");
         esp_cmd("AT+CIPSERVER=0", "OK", 2000);
         return false;
     }
@@ -285,7 +592,7 @@ bool wifi_serve_bmp_snapshot(const uint16_t *rgb565, int w, int h, int port)
     snprintf(cmd, sizeof(cmd), "AT+CIPCLOSE=%d", link_id);
     esp_cmd(cmd, "OK", 2000);
     esp_cmd("AT+CIPSERVER=0", "OK", 2000);
-    printf("[wifi] snapshot sent (%d bytes BMP)\n", bmp_bytes);
+    LOGF("[wifi] snapshot sent (%d bytes BMP)", bmp_bytes);
     return true;
 }
 
@@ -300,7 +607,7 @@ bool wifi_push_bmp_snapshot(const char *host, int port, const uint16_t *rgb565, 
     char cmd[96];
     snprintf(cmd, sizeof(cmd), "AT+CIPSTART=0,\"TCP\",\"%s\",%d", host, port);
     if (esp_cmd(cmd, "OK", 12000) != 1 && !strstr(acc, "ALREADY CONNECTED")) {
-        printf("[wifi] CIPSTART failed: <<%s>>\n", acc);
+        LOGF("[wifi] CIPSTART failed: <<%s>>", acc);
         return false;
     }
 

@@ -12,7 +12,7 @@
 #include <filesystem.h>
 #include <storage/sdcard.h>
 #include <fpioa.h>
-#include <stdio.h>
+#include "log.h"
 
 bool sd_mount(void)
 {
@@ -24,13 +24,13 @@ bool sd_mount(void)
     handle_t spi  = io_open("/dev/spi1");
     handle_t gpio = io_open("/dev/gpio0");
     if (!spi || !gpio) {
-        printf("[sd] open spi1/gpio0 failed\n");
+        LOG("[sd] open spi1/gpio0 failed");
         return false;
     }
 
     handle_t sd = spi_sdcard_driver_install(spi, gpio, GPIOHS_SD_CS);
     if (!sd) {
-        printf("[sd] card init failed (inserted? wiring?)\n");
+        LOG("[sd] card init failed (inserted? wiring?)");
         return false;
     }
 
@@ -38,10 +38,10 @@ bool sd_mount(void)
      * (paths are normalized on the "/fs/" marker); "/sd" throws -> -1. */
     int r = filesystem_mount("/fs/0/", sd);
     if (r != 0) {
-        printf("[sd] mount rc=%d\n", r);
+        LOGF("[sd] mount rc=%d", r);
         return false;
     }
-    printf("[sd] mounted at /fs/0/\n");
+    LOG("[sd] mounted at /fs/0/");
     return true;
 }
 
@@ -50,17 +50,17 @@ int sd_list_root(void)
     find_find_data_t fd;
     handle_t h = filesystem_find_first("/fs/0/", "*", &fd);
     if (!h) {
-        printf("[sd] root empty or find failed\n");
+        LOG("[sd] root empty or find failed");
         return 0;
     }
 
     int n = 0;
     do {
-        printf("[sd]   %s\n", fd.filename);
+        LOGF("[sd]   %s", fd.filename);
         n++;
     } while (filesystem_find_next(h, &fd));
     filesystem_find_close(h);
 
-    printf("[sd] %d entries in root\n", n);
+    LOGF("[sd] %d entries in root", n);
     return n;
 }

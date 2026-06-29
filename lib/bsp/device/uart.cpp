@@ -25,7 +25,7 @@
 using namespace sys;
 
 #define UART_BRATE_CONST 16
-#define RINGBUFF_LEN 64
+#define RINGBUFF_LEN 8192
 
 typedef struct
 {

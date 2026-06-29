@@ -58,6 +58,12 @@ void audio_tone(int freq_hz, int ms, int amplitude)
     }
 }
 
+void audio_write_pcm(const int16_t *stereo_samples, int frames)
+{
+    if (frames > 0)
+        io_write(i2s, (const uint8_t *)stereo_samples, frames * 4);
+}
+
 void audio_test(void)
 {
     audio_tone(784,  180, 9000);   /* G5 */
