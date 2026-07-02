@@ -25,6 +25,7 @@ include_directories(
 # ── Third-party ────────────────────────────────────────────────────────────────
 add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/fatfs" "${CMAKE_BINARY_DIR}/fatfs")
 add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/lwip"  "${CMAKE_BINARY_DIR}/lwip")
+add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/esp_serial_flasher" "${CMAKE_BINARY_DIR}/esp_serial_flasher")
 
 # ── SDK libraries ──────────────────────────────────────────────────────────────
 add_subdirectory("${CMAKE_SOURCE_DIR}/lib/hal"      "${CMAKE_BINARY_DIR}/hal")
@@ -57,7 +58,7 @@ target_include_directories(robot_show PRIVATE
 
 target_link_libraries(robot_show
     -Wl,--start-group
-    m freertos atomic bsp c stdc++ drivers hal posix fatfs lwipcore
+    m freertos atomic bsp c stdc++ drivers hal posix fatfs lwipcore esp_serial_flasher
     -Wl,--end-group
 )
 

@@ -101,13 +101,19 @@
 #define PIN_ESP_TX         6
 #define PIN_ESP_RX         7
 #define PIN_ESP_EN         8
+#define PIN_ESP_SPI_CS     0
+#define PIN_ESP_SPI_CLK    1
+#define PIN_ESP_SPI_MISO   2
+#define PIN_ESP_SPI_MOSI   3
+#define PIN_ESP_BOOT      15
 #define GPIO_ESP_EN        0
+#define GPIO_ESP_BOOT      3
 
 /* ── STM32 ───────────────────────────────────────────────────────────────── */
-#define PIN_STM_TX         0
-#define PIN_STM_RX         1
-#define PIN_STM_BOOT0      2
-#define PIN_STM_NRST       3
+#define PIN_STM_TX        12
+#define PIN_STM_RX        13
+#define PIN_STM_BOOT0     14
+#define PIN_STM_NRST      11
 
 /* ── Debug UART ──────────────────────────────────────────────────────────── */
 #define PIN_DBG_TX         5

@@ -28,7 +28,7 @@ static handle_t uart;
 static char     acc[1024];          /* response accumulator */
 
 #define ESP_BOOT_BAUD 115200
-#define ESP_FAST_BAUD 460800
+static const int esp_fast_bauds[] = { 921600, 460800 };
 
 static volatile gpio_t *const REG_GPIO = (volatile gpio_t *)GPIO_BASE_ADDR;
 
@@ -45,6 +45,21 @@ static void esp_en(int on)
 static void esp_write(const char *s)
 {
     io_write(uart, (const uint8_t *)s, strlen(s));
+}
+
+static void esp_drain_rx(int quiet_ms)
+{
+    int quiet = 0;
+    while (quiet < quiet_ms) {
+        uint8_t tmp[128];
+        int r = io_read(uart, tmp, sizeof(tmp));
+        if (r > 0)
+            quiet = 0;
+        else {
+            usleep(10 * 1000);
+            quiet += 10;
+        }
+    }
 }
 
 /* Drain RX into acc[] until `needle` appears (->1), "ERROR"/"FAIL" (-> -1),
@@ -72,35 +87,78 @@ static int esp_expect(const char *needle, int timeout_ms)
 
 static int esp_cmd(const char *cmd, const char *expect, int timeout_ms)
 {
+    esp_drain_rx(20);
     esp_write(cmd);
     esp_write("\r\n");
     return esp_expect(expect, timeout_ms);
 }
 
-static int esp_set_fast_baud(void)
+static int esp_boot_at_115200(void)
+{
+    uart_config(uart, ESP_BOOT_BAUD, 8, UART_STOP_1, UART_PARITY_NONE);
+
+    /* AT+UART_CUR is temporary, so this reset recovers the module to the
+     * firmware default instead of leaving external tools stuck at high baud. */
+    esp_en(0);
+    usleep(300 * 1000);
+    esp_en(1);
+    usleep(1000 * 1000);
+    esp_expect("ready", 2000);
+    esp_drain_rx(50);
+
+    int ok = 0;
+    for (int i = 0; i < 8 && ok != 1; i++)
+        ok = esp_cmd("AT", "OK", 600);
+    if (ok != 1)
+        return 0;
+
+    esp_cmd("ATE0", "OK", 1000);
+    return 1;
+}
+
+static int esp_try_fast_baud(int baud)
 {
     char cmd[64];
 
-    snprintf(cmd, sizeof(cmd), "AT+UART_CUR=%d,8,1,0,0", ESP_FAST_BAUD);
-    if (esp_cmd(cmd, "OK", 1000) != 1) {
-        LOGF("[wifi] fast UART rejected: <<%s>>", acc);
+    snprintf(cmd, sizeof(cmd), "AT+UART_CUR=%d,8,1,0,0", baud);
+    if (esp_cmd(cmd, "OK", 1500) != 1) {
+        LOGF("[wifi] UART %d rejected: <<%s>>", baud, acc);
         return 0;
     }
 
-    usleep(50 * 1000);
-    uart_config(uart, ESP_FAST_BAUD, 8, UART_STOP_1, UART_PARITY_NONE);
-    usleep(50 * 1000);
+    usleep(100 * 1000);
+    uart_config(uart, baud, 8, UART_STOP_1, UART_PARITY_NONE);
+    usleep(100 * 1000);
+    esp_drain_rx(20);
 
     for (int i = 0; i < 5; i++) {
-        if (esp_cmd("AT", "OK", 500) == 1) {
-            LOGF("[wifi] ESP UART %d", ESP_FAST_BAUD);
+        if (esp_cmd("AT", "OK", 600) == 1) {
+            LOGF("[wifi] ESP UART %d", baud);
             return 1;
         }
     }
 
-    uart_config(uart, ESP_BOOT_BAUD, 8, UART_STOP_1, UART_PARITY_NONE);
-    LOG("[wifi] fast UART handshake failed, back to 115200");
+    LOGF("[wifi] UART %d handshake failed", baud);
     return 0;
+}
+
+static int esp_set_fast_baud(void)
+{
+    for (int i = 0; i < (int)(sizeof(esp_fast_bauds) / sizeof(esp_fast_bauds[0])); i++) {
+        int baud = esp_fast_bauds[i];
+        if (i > 0 && !esp_boot_at_115200()) {
+            LOG("[wifi] AT recovery failed before baud fallback");
+            return ESP_BOOT_BAUD;
+        }
+        if (esp_try_fast_baud(baud))
+            return baud;
+    }
+
+    if (esp_boot_at_115200())
+        LOG("[wifi] fast UART unavailable, using 115200");
+    else
+        LOG("[wifi] fast UART unavailable and 115200 recovery failed");
+    return ESP_BOOT_BAUD;
 }
 
 static int esp_send_bytes(int link_id, const uint8_t *data, int len)
@@ -320,27 +378,14 @@ bool wifi_connect(char *ip_out, int ip_len)
     wifi_init_pins();
     uart = io_open("/dev/uart2");                    /* == hw UART2 */
     configASSERT(uart);
-    uart_config(uart, ESP_BOOT_BAUD, 8, UART_STOP_1, UART_PARITY_NONE);
 
-    /* Power-cycle the ESP so it cold-boots from any stuck AT state
-     * (timing matches the working MaixPy bring-up: 300 ms low, 1 s settle). */
-    esp_en(0);
-    usleep(300 * 1000);
-    esp_en(1);
-    usleep(1000 * 1000);
-    esp_expect("ready", 2000);                       /* AT fw prints "ready" */
-
-    /* Handshake (retry — first bytes after boot are noisy). */
-    int ok = 0;
-    for (int i = 0; i < 6 && ok != 1; i++)
-        ok = esp_cmd("AT", "OK", 500);
-    if (ok != 1) {
+    if (!esp_boot_at_115200()) {
         LOG("[wifi] no AT response");
         return false;
     }
 
-    esp_cmd("ATE0", "OK", 1000);                     /* echo off */
-    esp_set_fast_baud();
+    int active_baud = esp_set_fast_baud();
+    LOGF("[wifi] active UART baud=%d", active_baud);
     esp_cmd("AT+CWMODE=1", "OK", 2000);              /* station mode */
 
     char cmd[160];

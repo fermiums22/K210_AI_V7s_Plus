@@ -7,24 +7,30 @@ $SDK   = "C:\K210\sdk\kendryte-freertos-sdk-0.7.0"
 $TC    = "C:\K210\toolchain\kendryte-toolchain\bin"
 $ROOT  = Split-Path $PSScriptRoot -Parent
 $BUILD = "$ROOT\build"
+$MAKE  = "$TC\mingw32-make.exe"
+if (-not (Test-Path $MAKE)) {
+    $cmd = Get-Command mingw32-make.exe -ErrorAction SilentlyContinue
+    if ($cmd) { $MAKE = $cmd.Source }
+}
+if (-not (Test-Path $MAKE)) {
+    $MAKE = "C:\msys64\mingw64\bin\mingw32-make.exe"
+}
 
 Set-Location $ROOT
 
 # ── Configure ────────────────────────────────────────────────────────────────
-if (-not (Test-Path "$BUILD\CMakeCache.txt")) {
-    Write-Host "[cmake] configuring..." -ForegroundColor Cyan
-    New-Item -ItemType Directory -Force $BUILD | Out-Null
-    & cmake -S . -B $BUILD `
-        -G "MinGW Makefiles" `
-        "-DCMAKE_MAKE_PROGRAM=$TC\mingw32-make.exe" `
-        "-DTOOLCHAIN=$TC" `
-        "-DSDK_ROOT=$SDK" 2>&1
-    if ($LASTEXITCODE -ne 0) { Write-Error "cmake configure failed"; exit 1 }
-}
+Write-Host "[cmake] configuring..." -ForegroundColor Cyan
+New-Item -ItemType Directory -Force $BUILD | Out-Null
+& cmake -S . -B $BUILD `
+    -G "MinGW Makefiles" `
+    "-DCMAKE_MAKE_PROGRAM=$MAKE" `
+    "-DTOOLCHAIN=$TC" `
+    "-DSDK_ROOT=$SDK" 2>&1
+if ($LASTEXITCODE -ne 0) { Write-Error "cmake configure failed"; exit 1 }
 
 # ── Build ────────────────────────────────────────────────────────────────────
 Write-Host "[make] building..." -ForegroundColor Cyan
-& "$TC\mingw32-make.exe" -C $BUILD -j4 2>&1
+& "$MAKE" -C $BUILD -j4 2>&1
 if ($LASTEXITCODE -ne 0) { Write-Error "build failed"; exit 1 }
 
 $BIN = "$BUILD\robot_show.bin"

@@ -18,7 +18,7 @@ import sys
 import time
 
 BLOCK = 2048
-AFTER_ACK_DELAY = 0.15
+AFTER_ACK_DELAY = 0.005
 
 def recv_line(conn: socket.socket, limit: int = 32) -> bytes:
     data = b""
