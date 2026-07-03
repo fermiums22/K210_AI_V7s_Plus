@@ -21,7 +21,7 @@
 #include <esp_loader_io.h>
 
 #define ESP_FLASH_BAUD       115200u
-#define ESP_FLASH_BLOCK      64u
+#define ESP_FLASH_BLOCK      256u
 
 typedef struct {
     esp_loader_port_t port;
@@ -339,7 +339,6 @@ bool esp_flash_file(const char *path, uint32_t offset)
             filesystem_file_close(f);
             return false;
         }
-        vTaskDelay(pdMS_TO_TICKS(1));
 
         sent += chunk;
         if ((sent % (32u * 1024u)) == 0 || sent == image_size) {
