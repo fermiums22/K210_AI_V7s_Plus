@@ -7,6 +7,7 @@
 #include <filesystem.h>
 #include <ff.h>
 #include <platform.h>
+#include <sysctl.h>
 #include <uarths.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +31,12 @@ static int uarths_try_read_byte(uint8_t *out)
 static void host_puts(const char *s)
 {
     uarths_puts(s);
+}
+
+static void host_write(const uint8_t *data, uint32_t size)
+{
+    for (uint32_t i = 0; i < size; i++)
+        uarths_write_byte(data[i]);
 }
 
 static int read_byte_timeout(uint8_t *out, uint32_t timeout_ms)
@@ -129,9 +136,22 @@ static void make_parent_dirs(const char *rel_path)
     }
 }
 
+static bool make_fs_path(const char *rel_path, char *fs_path, size_t fs_size,
+                         char *fat_path, size_t fat_size)
+{
+    if (!safe_rel_path(rel_path))
+        return false;
+    snprintf(fs_path, fs_size, "/fs/0/%s", rel_path);
+    if (fat_path && fat_size)
+        snprintf(fat_path, fat_size, "0:/%s", rel_path);
+    return true;
+}
+
 static bool receive_file(const char *rel_path, uint32_t size)
 {
-    if (!safe_rel_path(rel_path)) {
+    char path[160];
+    char fat_path[160];
+    if (!make_fs_path(rel_path, path, sizeof(path), fat_path, sizeof(fat_path))) {
         LOGF("[sd-uart] bad path: %s", rel_path);
         diag_printf(5, "UART bad path: %.24s", rel_path);
         host_puts("KSD:ERR bad-path\n");
@@ -139,11 +159,6 @@ static bool receive_file(const char *rel_path, uint32_t size)
     }
 
     make_parent_dirs(rel_path);
-
-    char path[160];
-    snprintf(path, sizeof(path), "/fs/0/%s", rel_path);
-    char fat_path[160];
-    snprintf(fat_path, sizeof(fat_path), "0:/%s", rel_path);
     f_unlink(fat_path);
     handle_t f = filesystem_file_open(path, FILE_ACCESS_WRITE, FILE_MODE_CREATE_ALWAYS);
     if (!f) {
@@ -194,6 +209,66 @@ static bool receive_file(const char *rel_path, uint32_t size)
     return true;
 }
 
+static bool send_file(const char *rel_path)
+{
+    char path[160];
+    if (!make_fs_path(rel_path, path, sizeof(path), NULL, 0)) {
+        LOGF("[sd-uart] bad get path: %s", rel_path);
+        host_puts("KSD:ERR bad-path\n");
+        return false;
+    }
+
+    handle_t f = filesystem_file_open(path, FILE_ACCESS_READ, FILE_MODE_OPEN_EXISTING);
+    if (!f) {
+        LOGF("[sd-uart] get missing: %s", path);
+        host_puts("KSD:MISSING\n");
+        return true;
+    }
+
+    uint64_t size64 = filesystem_file_get_size(f);
+    if (size64 > 0xffffffffu) {
+        filesystem_file_close(f);
+        host_puts("KSD:ERR too-large\n");
+        return false;
+    }
+
+    uint32_t size = (uint32_t)size64;
+    char hdr[48];
+    snprintf(hdr, sizeof(hdr), "KSD:SIZE %lu\n", (unsigned long)size);
+    host_puts(hdr);
+
+    uint32_t sent = 0;
+    while (sent < size) {
+        uint32_t chunk = size - sent;
+        if (chunk > sizeof(rx_buf))
+            chunk = sizeof(rx_buf);
+        int got = filesystem_file_read(f, rx_buf, chunk);
+        if (got <= 0) {
+            filesystem_file_close(f);
+            host_puts("KSD:ERR read\n");
+            return false;
+        }
+        host_write(rx_buf, (uint32_t)got);
+        sent += (uint32_t)got;
+    }
+
+    filesystem_file_close(f);
+    host_puts("KSD:OK\n");
+    LOGF("[sd-uart] sent %s %lu", rel_path, (unsigned long)size);
+    return true;
+}
+
+static void board_reset(void)
+{
+    LOG("[sd-uart] host requested SOC reset");
+    diag_line(6, "UART reset requested");
+    host_puts("KSD:RESETTING\n");
+    vTaskDelay(pdMS_TO_TICKS(200));
+    sysctl_reset(SYSCTL_RESET_SOC);
+    while (1)
+        vTaskDelay(pdMS_TO_TICKS(1000));
+}
+
 bool sd_uart_receive_window(uint32_t window_ms)
 {
     LOGF("[sd-uart] waiting %lu ms for UART upload", (unsigned long)window_ms);
@@ -225,18 +300,29 @@ bool sd_uart_receive_window(uint32_t window_ms)
             return true;
         }
 
-        char rel_path[128];
-        unsigned long size = 0;
-        if (sscanf(line, "PUT %127s %lu", rel_path, &size) != 2) {
-            LOGF("[sd-uart] bad command: %s", line);
-            diag_line(4, "UART bad command");
-            host_puts("KSD:ERR command\n");
-            return false;
+        if (strcmp(line, "RESET") == 0) {
+            board_reset();
         }
 
-        LOGF("[sd-uart] put %s %lu", rel_path, size);
-        diag_printf(4, "PUT %.24s", rel_path);
-        if (!receive_file(rel_path, (uint32_t)size))
-            return false;
+        char rel_path[128];
+        unsigned long size = 0;
+        if (sscanf(line, "GET %127s", rel_path) == 1) {
+            if (!send_file(rel_path))
+                return false;
+            continue;
+        }
+
+        if (sscanf(line, "PUT %127s %lu", rel_path, &size) == 2) {
+            LOGF("[sd-uart] put %s %lu", rel_path, size);
+            diag_printf(4, "PUT %.24s", rel_path);
+            if (!receive_file(rel_path, (uint32_t)size))
+                return false;
+            continue;
+        }
+
+        LOGF("[sd-uart] bad command: %s", line);
+        diag_line(4, "UART bad command");
+        host_puts("KSD:ERR command\n");
+        return false;
     }
 }
