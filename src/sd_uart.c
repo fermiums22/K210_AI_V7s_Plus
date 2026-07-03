@@ -66,6 +66,14 @@ static void host_write(const uint8_t *data, uint32_t size)
         uarths_write_byte(data[i]);
 }
 
+static void log_rx_byte(uint8_t c)
+{
+    if (c >= 0x20 && c <= 0x7e)
+        LOGF("[sd-uart] rx byte %02X '%c'", (unsigned)c, (char)c);
+    else
+        LOGF("[sd-uart] rx byte %02X", (unsigned)c);
+}
+
 static int read_byte_timeout(uint8_t *out, uint32_t timeout_ms)
 {
     TickType_t start = xTaskGetTickCount();
@@ -81,15 +89,25 @@ static int read_line(char *out, int out_len, uint32_t timeout_ms)
 {
     int n = 0;
     uint8_t c;
+
+    LOGF("[sd-uart] read_line: waiting %lu ms", (unsigned long)timeout_ms);
+
     while (n < out_len - 1) {
-        if (!read_byte_timeout(&c, timeout_ms))
+        if (!read_byte_timeout(&c, timeout_ms)) {
+            out[n] = 0;
+            LOGF("[sd-uart] read_line timeout after %d chars: %s", n, out);
             return 0;
+        }
+
+        log_rx_byte(c);
+
         if (c == '\n')
             break;
         if (c != '\r')
             out[n++] = (char)c;
     }
     out[n] = 0;
+    LOGF("[sd-uart] read_line done %d chars: %s", n, out);
     return 1;
 }
 
@@ -316,11 +334,13 @@ bool sd_uart_receive_window(uint32_t window_ms)
     for (;;) {
         char line[192];
         host_puts("KSD:CMD\n");
+        LOG("[sd-uart] command prompt sent; waiting for command line");
         if (!read_line(line, sizeof(line), 30000)) {
             LOG("[sd-uart] command timeout");
             diag_line(4, "UART command timeout");
             return false;
         }
+        LOGF("[sd-uart] command line: %s", line);
 
         if (strcmp(line, "DONE") == 0) {
             host_puts("KSD:DONE\n");
