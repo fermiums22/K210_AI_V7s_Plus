@@ -17,15 +17,14 @@
 #define FRAME_BYTES 32
 #define SPI_WIRE_BYTES 34
 #define DATA_BYTES 20
-#define BAD_DUMP_LIMIT 12
+#define BAD_DUMP_LIMIT 8
 
-/* Target path is PC -> WiFi -> ESP -> SPI -> K210 -> SD.  The ESP8266
- * Arduino SPISlave buffer is only 32 bytes, so throughput mostly comes from
- * clock rate and avoiding 1 ms sleeps per frame.  Start at 5 MHz; if this is
- * clean we can raise to 8-10 MHz later. */
-#define ESP_SPI_HZ 5000000.0
-#define IDLE_DELAY_AFTER_FRAMES 16u
-#define BAD_DELAY_AFTER_FRAMES 64u
+/* Bring-up speed.  Do not free-run the Arduino ESP8266 SPISlave when the queue
+ * is empty: continuous idle polling crashes it.  Poll only after ESP reports an
+ * incoming TCP PUT on UART; then we can optimize/replace the ESP SDK layer. */
+#define ESP_SPI_HZ 1000000.0
+#define BAD_DELAY_AFTER_FRAMES 16u
+#define NO_GOOD_ABORT_FRAMES 512u
 
 enum { FT_IDLE = 0, FT_BEGIN = 1, FT_DATA = 2, FT_END = 3, FT_INFO = 4 };
 
@@ -162,6 +161,8 @@ static void end_file(void)
     close_file();
     LOGF("[wifi-spi] END %s %lu/%lu", s_name, (unsigned long)s_written, (unsigned long)s_expected);
     diag_printf(6, "Done %lu/%lu", (unsigned long)s_written, (unsigned long)s_expected);
+    esp_uart_log_clear_put_active();
+    LOG("[wifi-spi] PUT done, stop polling until next TCP PUT");
 }
 
 static void speed_tick(void)
@@ -199,8 +200,8 @@ static void init_spi(void)
     s_dev = spi_get_device(spi, SPI_MODE_1, SPI_FF_STANDARD, 1u, 8);
     configASSERT(s_dev);
     spi_dev_set_clock_rate(s_dev, ESP_SPI_HZ);
-    LOG("[wifi-spi] ready hz=5000000 mode=1 waiting-for-esp-ready");
-    diag_line(3, "WiFi/SPI wait ESP 5M");
+    LOG("[wifi-spi] ready hz=1000000 mode=1 gated-by-TCP-PUT");
+    diag_line(3, "WiFi/SPI gated 1M");
 }
 
 void esp_spi_link_run_forever(void)
@@ -209,8 +210,9 @@ void esp_spi_link_run_forever(void)
     init_spi();
     s_last_tick = xTaskGetTickCount();
     int announced_ready = 0;
-    uint32_t idle_frames = 0;
+    int announced_wait = 0;
     uint32_t bad_frames = 0;
+    uint32_t frames_since_good = 0;
 
     for (;;) {
         if (s_paused) {
@@ -224,41 +226,48 @@ void esp_spi_link_run_forever(void)
         }
         if (!announced_ready) {
             announced_ready = 1;
-            LOG("[wifi-spi] ESP SPI ready, polling frames fast");
-            diag_line(3, "WiFi/SPI polling fast");
+            LOG("[wifi-spi] ESP SPI ready, waiting TCP PUT before polling");
+            diag_line(3, "WiFi/SPI wait PUT");
+        }
+        if (!esp_uart_log_put_active()) {
+            if (!announced_wait) {
+                announced_wait = 1;
+                LOG("[wifi-spi] idle, no SPI polling until TCP PUT");
+            }
+            speed_tick();
+            vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        if (announced_wait) {
+            announced_wait = 0;
+            bad_frames = 0;
+            frames_since_good = 0;
+            LOG("[wifi-spi] TCP PUT active, polling frames");
         }
 
         kframe_t fr;
         if (read_frame(&fr)) {
             bad_frames = 0;
-            if (fr.type == FT_BEGIN) {
-                idle_frames = 0;
-                begin_file(&fr);
-            } else if (fr.type == FT_DATA) {
-                idle_frames = 0;
-                data_file(&fr);
-            } else if (fr.type == FT_END) {
-                idle_frames = 0;
-                end_file();
-            } else {
-                idle_frames++;
-            }
+            frames_since_good = 0;
+            if (fr.type == FT_BEGIN) begin_file(&fr);
+            else if (fr.type == FT_DATA) data_file(&fr);
+            else if (fr.type == FT_END) end_file();
         } else {
             bad_frames++;
+            frames_since_good++;
+            if (!s_file && frames_since_good >= NO_GOOD_ABORT_FRAMES) {
+                LOG("[wifi-spi] no valid frames after TCP PUT, stop polling to protect ESP");
+                esp_uart_log_clear_put_active();
+                frames_since_good = 0;
+            }
         }
 
         speed_tick();
 
-        /* No 1 ms delay in the data path.  Sleeping per 20-byte frame capped the
-         * link around 20 kB/s.  Only back off when the ESP queue is idle or the
-         * link is producing repeated bad frames. */
         if (s_file) {
             taskYIELD();
         } else if (bad_frames >= BAD_DELAY_AFTER_FRAMES) {
             bad_frames = 0;
-            vTaskDelay(pdMS_TO_TICKS(1));
-        } else if (idle_frames >= IDLE_DELAY_AFTER_FRAMES) {
-            idle_frames = 0;
             vTaskDelay(pdMS_TO_TICKS(1));
         } else {
             taskYIELD();
