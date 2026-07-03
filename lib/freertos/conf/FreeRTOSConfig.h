@@ -55,7 +55,6 @@
  *----------------------------------------------------------*/
 
 #include <stdint.h>
-#include <stdio.h>
 
 /* clock */
 #define configCPU_CLOCK_HZ					uxPortGetCPUClock()
@@ -134,21 +133,11 @@ enum
 /* Diagnostics */
 #define configCHECK_FOR_STACK_OVERFLOW          1
 
-/* configASSERT behaviour.
- * Keep original if-statement macro shape because SDK code contains constructs
- * like: configASSERT(expr) break; .  In C++ drivers, assert failure is thrown
- * without pulling C++ headers into FreeRTOSConfig.h, which is included from an
- * extern "C" block by this SDK. */
+/* configASSERT behaviour */
 extern void vPortFatal(const char* file, int line, const char* message);
-#ifdef __cplusplus
-#define configASSERT( x ) if( ( x ) == 0 ) {                         \
-    printf("[ASSERT] %s:%d %s\r\n", __FILE__, __LINE__, #x);        \
-    throw #x;                                                        \
+/* Normal assert() semantics without relying on the provision of an assert.h header file. */
+#define configASSERT( x ) if( ( x ) == 0 ) {           \
+    vPortFatal(__FILE__, __LINE__, #x);				   \
 }
-#else
-#define configASSERT( x ) if( ( x ) == 0 ) {                         \
-    vPortFatal(__FILE__, __LINE__, #x);                              \
-}
-#endif
 
 #endif /* FREERTOS_CONFIG_H */
