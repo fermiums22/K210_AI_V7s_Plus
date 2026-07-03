@@ -38,8 +38,9 @@ static char s_cam_name[32];
 
 static void cam_route_dvp_data(int to_camera)
 {
-    /* LCD uses SPI0 octal on the same DVP data pads. */
-    sysctl_set_spi0_dvp_data(to_camera ? 0 : 1);
+    /* sysctl_set_spi0_dvp_data(1) routes the shared SPI0_D0-D7/DVP_D0-D7 pads to DVP data.
+     * sysctl_set_spi0_dvp_data(0) gives the pads back to SPI0/LCD. */
+    sysctl_set_spi0_dvp_data(to_camera ? 1 : 0);
     usleep(2 * 1000);
 }
 
