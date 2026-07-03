@@ -23,16 +23,17 @@ if errorlevel 1 (
 )
 
 echo.
-echo Put K210 into ISP mode: hold BOOT, press RESET, release BOOT.
-pause
-
+echo [kflash] using DTR/RTS auto-reset/boot on %PORT% (-B dan).
+echo [kflash] Do not hold BOOT/RESET manually unless auto-boot fails.
 echo [kflash] flashing %BIN% to %PORT% ...
 py -3 -m kflash -p %PORT% -b 1500000 -B dan "%BIN%"
 if errorlevel 1 (
   echo ERROR: kflash failed
+  echo If this is a sync/timeout error, check the COM port and try again.
+  echo Only then try manual BOOT+RESET fallback.
   exit /b 1
 )
 
 echo.
-echo OK. Press RESET on K210 to boot the new firmware.
+echo OK: K210 flashed. If the app does not start automatically, press RESET once.
 exit /b 0
