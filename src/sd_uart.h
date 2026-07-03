@@ -4,3 +4,4 @@
 #include <stdint.h>
 
 bool sd_uart_receive_window(uint32_t window_ms);
+void sd_uart_service_start(void);
