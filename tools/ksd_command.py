@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
-import sys
 import time
 from pathlib import Path
 
@@ -53,7 +52,7 @@ def main() -> int:
                 pass
 
             deadline = time.monotonic() + args.timeout
-            sent_magic = False
+            next_sync = 0.0
             got_hello = False
             sent_cmd = False
 
@@ -65,10 +64,11 @@ def main() -> int:
                 else:
                     line = ""
 
-                if (not sent_magic) and ("KSD:READY" in line or line == ""):
+                now = time.monotonic()
+                if not got_hello and ("KSD:READY" in line or now >= next_sync):
                     ser.write(b"KSD1\n")
                     ser.flush()
-                    sent_magic = True
+                    next_sync = now + 1.0
                     continue
 
                 if "KSD:HELLO" in line:
