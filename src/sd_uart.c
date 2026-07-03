@@ -24,6 +24,25 @@
 static volatile uarths_t *const REG_UARTHS = (volatile uarths_t *)UARTHS_BASE_ADDR;
 static uint8_t rx_buf[UART_SD_BUF] __attribute__((aligned(64)));
 
+static TickType_t ms_to_ticks_min(uint32_t ms)
+{
+    TickType_t ticks = pdMS_TO_TICKS(ms);
+    if (ticks == 0)
+        ticks = 1;
+    return ticks;
+}
+
+static void poll_delay(void)
+{
+    vTaskDelay(1);
+}
+
+static int deadline_expired(TickType_t start, uint32_t timeout_ms)
+{
+    TickType_t timeout = ms_to_ticks_min(timeout_ms);
+    return (xTaskGetTickCount() - start) >= timeout;
+}
+
 static int uarths_try_read_byte(uint8_t *out)
 {
     /* UARTHS rxdata is SiFive-style: bit31 is EMPTY, bits[7:0] are DATA.
@@ -49,12 +68,11 @@ static void host_write(const uint8_t *data, uint32_t size)
 
 static int read_byte_timeout(uint8_t *out, uint32_t timeout_ms)
 {
-    uint32_t waited = 0;
-    while (waited < timeout_ms) {
+    TickType_t start = xTaskGetTickCount();
+    while (!deadline_expired(start, timeout_ms)) {
         if (uarths_try_read_byte(out))
             return 1;
-        vTaskDelay(pdMS_TO_TICKS(1));
-        waited++;
+        poll_delay();
     }
     return 0;
 }
@@ -79,19 +97,18 @@ static int wait_magic(uint32_t window_ms)
 {
     const char *magic = UART_SD_MAGIC;
     int mi = 0;
-    uint32_t waited = 0;
-    uint32_t announced = 1000;
+    TickType_t start = xTaskGetTickCount();
+    TickType_t next_ready = start;
     uint8_t c;
 
-    while (waited < window_ms) {
+    while (!deadline_expired(start, window_ms)) {
         if (!uarths_try_read_byte(&c)) {
-            vTaskDelay(pdMS_TO_TICKS(1));
-            waited++;
-            announced++;
-            if (announced >= 1000) {
+            TickType_t now = xTaskGetTickCount();
+            if ((now - next_ready) >= ms_to_ticks_min(1000)) {
                 host_puts("KSD:READY\n");
-                announced = 0;
+                next_ready = now;
             }
+            poll_delay();
             continue;
         }
 
@@ -110,15 +127,14 @@ static int wait_magic(uint32_t window_ms)
 
 static void drain_rx(uint32_t quiet_ms)
 {
-    uint32_t quiet = 0;
+    TickType_t quiet_start = xTaskGetTickCount();
     uint8_t c;
-    while (quiet < quiet_ms) {
+    while (!deadline_expired(quiet_start, quiet_ms)) {
         if (uarths_try_read_byte(&c)) {
-            quiet = 0;
+            quiet_start = xTaskGetTickCount();
             continue;
         }
-        vTaskDelay(pdMS_TO_TICKS(1));
-        quiet++;
+        poll_delay();
     }
 }
 
@@ -273,10 +289,10 @@ static void board_reset(void)
     LOG("[sd-uart] host requested SOC reset");
     diag_line(6, "UART reset requested");
     host_puts("KSD:RESETTING\n");
-    vTaskDelay(pdMS_TO_TICKS(200));
+    vTaskDelay(ms_to_ticks_min(200));
     sysctl_reset(SYSCTL_RESET_SOC);
     while (1)
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        vTaskDelay(ms_to_ticks_min(1000));
 }
 
 bool sd_uart_receive_window(uint32_t window_ms)
