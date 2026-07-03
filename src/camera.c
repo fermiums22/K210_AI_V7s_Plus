@@ -19,6 +19,7 @@
 #include "gc0328_regs.h"
 #include <devices.h>
 #include <dvp.h>
+#include <gpiohs.h>
 #include <platform.h>
 #include <fpioa.h>
 #include <sysctl.h>
@@ -32,6 +33,10 @@
 #define CAM_W        320
 #define CAM_H        240
 
+#define PROBE_VSYNC_GPIOHS 20
+#define PROBE_HREF_GPIOHS  21
+#define PROBE_PCLK_GPIOHS  22
+
 static handle_t s_dvp, s_sccb;
 static handle_t s_gc;
 static uint32_t s_fb[CAM_W * CAM_H / 2] __attribute__((aligned(64)));  /* RGB565 display */
@@ -41,6 +46,7 @@ static volatile int s_frame_done;
 static int s_started;
 static int s_chip_id = -1;
 static char s_cam_name[32];
+static int s_signal_probe_done;
 
 static void cam_route_dvp_data(int to_camera)
 {
@@ -50,14 +56,8 @@ static void cam_route_dvp_data(int to_camera)
     usleep(2 * 1000);
 }
 
-static void cam_pins(void)
+static void cam_set_cmos_pins(void)
 {
-    /* Maix Dock routes the camera/LCD FPC banks at 1.8 V in the vendor demos. */
-    sysctl_set_power_mode(SYSCTL_POWER_BANK6, SYSCTL_POWER_V18);
-    sysctl_set_power_mode(SYSCTL_POWER_BANK7, SYSCTL_POWER_V18);
-
-    cam_route_dvp_data(1);
-
     fpioa_set_function(40, FUNC_SCCB_SDA);
     fpioa_set_function(41, FUNC_SCCB_SCLK);
     fpioa_set_function(42, FUNC_CMOS_RST);
@@ -66,6 +66,16 @@ static void cam_pins(void)
     fpioa_set_function(45, FUNC_CMOS_HREF);
     fpioa_set_function(46, FUNC_CMOS_XCLK);
     fpioa_set_function(47, FUNC_CMOS_PCLK);
+}
+
+static void cam_pins(void)
+{
+    /* Maix Dock routes the camera/LCD FPC banks at 1.8 V in the vendor demos. */
+    sysctl_set_power_mode(SYSCTL_POWER_BANK6, SYSCTL_POWER_V18);
+    sysctl_set_power_mode(SYSCTL_POWER_BANK7, SYSCTL_POWER_V18);
+
+    cam_route_dvp_data(1);
+    cam_set_cmos_pins();
 }
 
 static void on_frame(dvp_frame_event_t event, void *userdata)
@@ -87,6 +97,53 @@ static void cam_log_stream_regs(const char *tag)
     uint8_t r4f = sccb_dev_read_byte(s_gc, 0x4F);
     uint8_t r50 = sccb_dev_read_byte(s_gc, 0x50);
     printf("[cam] %s regs id=%02x f1=%02x f2=%02x 4f=%02x 50=%02x\n", tag, id, f1, f2, r4f, r50);
+}
+
+static void cam_probe_sync_pins(void)
+{
+    if (s_signal_probe_done)
+        return;
+    s_signal_probe_done = 1;
+
+    cam_route_dvp_data(1);
+
+    fpioa_set_function(43, FUNC_GPIOHS0 + PROBE_VSYNC_GPIOHS);
+    fpioa_set_function(45, FUNC_GPIOHS0 + PROBE_HREF_GPIOHS);
+    fpioa_set_function(47, FUNC_GPIOHS0 + PROBE_PCLK_GPIOHS);
+
+    volatile gpiohs_t *gpiohs = (volatile gpiohs_t *)GPIOHS_BASE_ADDR;
+    const uint32_t mask = (1u << PROBE_VSYNC_GPIOHS) | (1u << PROBE_HREF_GPIOHS) | (1u << PROBE_PCLK_GPIOHS);
+    gpiohs->output_en.u32[0] &= ~mask;
+    gpiohs->input_en.u32[0] |= mask;
+
+    uint32_t prev = gpiohs->input_val.u32[0];
+    uint32_t v_edges = 0, h_edges = 0, p_edges = 0;
+    uint32_t v_hi = 0, h_hi = 0, p_hi = 0;
+    const int samples = 200000;
+    for (int i = 0; i < samples; i++) {
+        uint32_t cur = gpiohs->input_val.u32[0];
+        uint32_t diff = cur ^ prev;
+        if (diff & (1u << PROBE_VSYNC_GPIOHS)) v_edges++;
+        if (diff & (1u << PROBE_HREF_GPIOHS))  h_edges++;
+        if (diff & (1u << PROBE_PCLK_GPIOHS))  p_edges++;
+        if (cur & (1u << PROBE_VSYNC_GPIOHS)) v_hi++;
+        if (cur & (1u << PROBE_HREF_GPIOHS))  h_hi++;
+        if (cur & (1u << PROBE_PCLK_GPIOHS))  p_hi++;
+        prev = cur;
+    }
+
+    printf("[cam-sig] samples=%d vsync_edges=%lu href_edges=%lu pclk_edges=%lu hi=%lu/%lu/%lu last=0x%08lx\n",
+           samples,
+           (unsigned long)v_edges,
+           (unsigned long)h_edges,
+           (unsigned long)p_edges,
+           (unsigned long)v_hi,
+           (unsigned long)h_hi,
+           (unsigned long)p_hi,
+           (unsigned long)prev);
+
+    cam_set_cmos_pins();
+    usleep(2 * 1000);
 }
 
 int cam_start(char *name_out, int len)
@@ -153,7 +210,10 @@ int cam_start(char *name_out, int len)
             continue;
         }
         sccb_dev_write_byte(s_gc, sensor_default_regs[i][0], sensor_default_regs[i][1]);
-        usleep(1000);
+        if (sensor_default_regs[i][0] == 0xfe && sensor_default_regs[i][1] == 0x80)
+            usleep(50 * 1000);
+        else
+            usleep(1000);
     }
     for (int i = 0; qvga_config[i][0]; i++) {
         sccb_dev_write_byte(s_gc, qvga_config[i][0], qvga_config[i][1]);
@@ -189,6 +249,9 @@ static int cam_grab_once(int timeout_ms)
     volatile dvp_t *dvp = (volatile dvp_t *)DVP_BASE_ADDR;
     s_frame_done = 0;
 
+    cam_route_dvp_data(1);
+    if (!s_signal_probe_done)
+        cam_probe_sync_pins();
     cam_route_dvp_data(1);
     printf("[cam] route DVP data pads to CAMERA\n");
 
