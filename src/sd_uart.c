@@ -2,6 +2,7 @@
 #include "sd.h"
 #include "log.h"
 #include "diag_screen.h"
+#include "camera.h"
 #include "esp_flasher.h"
 #include "esp_spi_link.h"
 #include "esp_uart_log.h"
@@ -27,6 +28,7 @@
 #define UART_SD_CMD_TIMEOUT_MS 2000u
 #define UART_SD_DATA_TIMEOUT_MS 15000u
 #define UART_SD_EMPTY_SPINS_BEFORE_YIELD 2048u
+#define CAM_CAPTURE_DEFAULT_PATH "cam/capture.rgb565"
 
 static volatile uarths_t *const REG_UARTHS = (volatile uarths_t *)UARTHS_BASE_ADDR;
 static uint8_t rx_buf[UART_SD_BUF] __attribute__((aligned(64)));
@@ -346,6 +348,102 @@ static bool send_file_quiet(const char *rel_path)
     return ok;
 }
 
+static bool write_camera_capture_file(const char *rel_path)
+{
+    char path[160];
+    char fat_path[160];
+
+    if (!make_fs_path(rel_path, path, sizeof(path), fat_path, sizeof(fat_path))) {
+        LOGF("[sd-uart] CAM_CAPTURE bad path: %s", rel_path);
+        diag_printf(6, "CAM bad path: %.24s", rel_path);
+        host_puts("KSD:CAPTURE_FAIL bad-path\n");
+        return false;
+    }
+
+    host_puts("KSD:CAPTURING\n");
+    LOGF("[sd-uart] CAM_CAPTURE requested: %s", rel_path);
+    diag_line(6, "CAM_CAPTURE requested");
+
+    if (!sd_mount()) {
+        LOG("[sd-uart] CAM_CAPTURE SD mount failed");
+        diag_line(6, "CAM_CAPTURE SD fail");
+        host_puts("KSD:CAPTURE_FAIL sd\n");
+        return false;
+    }
+
+    const uint16_t *pixels = NULL;
+    int w = 0;
+    int h = 0;
+    if (!cam_capture_rgb565(&pixels, &w, &h) || !pixels || w <= 0 || h <= 0) {
+        LOG("[sd-uart] CAM_CAPTURE camera failed");
+        diag_line(6, "CAM_CAPTURE camera fail");
+        host_puts("KSD:CAPTURE_FAIL camera\n");
+        return false;
+    }
+
+    uint32_t total = (uint32_t)w * (uint32_t)h * 2u;
+    make_parent_dirs(rel_path);
+    f_unlink(fat_path);
+
+    handle_t f = filesystem_file_open(path, FILE_ACCESS_WRITE, FILE_MODE_CREATE_ALWAYS);
+    if (!f) {
+        LOGF("[sd-uart] CAM_CAPTURE open failed: %s", path);
+        diag_line(6, "CAM_CAPTURE open fail");
+        host_puts("KSD:CAPTURE_FAIL open\n");
+        return false;
+    }
+
+    const uint8_t *src = (const uint8_t *)pixels;
+    uint32_t written = 0;
+    while (written < total) {
+        uint32_t chunk = total - written;
+        if (chunk > sizeof(rx_buf))
+            chunk = sizeof(rx_buf);
+
+        memcpy(rx_buf, src + written, chunk);
+        int wr = filesystem_file_write(f, rx_buf, chunk);
+        if (wr != (int)chunk) {
+            filesystem_file_close(f);
+            LOGF("[sd-uart] CAM_CAPTURE write failed: %lu/%lu",
+                 (unsigned long)written, (unsigned long)total);
+            diag_line(6, "CAM_CAPTURE write fail");
+            host_puts("KSD:CAPTURE_FAIL write\n");
+            return false;
+        }
+
+        written += chunk;
+    }
+
+    filesystem_file_close(f);
+
+    char hdr[192];
+    snprintf(hdr, sizeof(hdr), "KSD:CAPTURE_OK %s %lu %d %d RGB565\n",
+             rel_path, (unsigned long)total, w, h);
+    host_puts(hdr);
+    LOGF("[sd-uart] CAM_CAPTURE OK: %s %lu bytes %dx%d RGB565",
+         rel_path, (unsigned long)total, w, h);
+    diag_printf(6, "CAM OK %dx%d %lu", w, h, (unsigned long)total);
+    return true;
+}
+
+static bool run_cam_capture_command(const char *rel_path)
+{
+    int restart_uart = esp_uart_log_is_started();
+
+    esp_spi_link_pause(1);
+    if (restart_uart) {
+        esp_uart_log_stop();
+        vTaskDelay(ms_to_ticks_min(150));
+    }
+
+    bool ok = write_camera_capture_file(rel_path);
+
+    if (restart_uart)
+        esp_uart_log_start();
+    esp_spi_link_pause(0);
+    return ok;
+}
+
 static void board_reset(void)
 {
     LOG("[sd-uart] host requested SOC reset");
@@ -405,6 +503,24 @@ static void format_sd_command(void)
     }
 }
 
+static bool parse_optional_path(const char *line, const char *cmd,
+                                const char *default_path, char *rel_path,
+                                size_t rel_path_size)
+{
+    size_t cmd_len = strlen(cmd);
+    const char *p = line + cmd_len;
+
+    while (*p == ' ' || *p == '\t')
+        p++;
+
+    if (*p == 0) {
+        snprintf(rel_path, rel_path_size, "%s", default_path);
+        return true;
+    }
+
+    return sscanf(p, "%127s", rel_path) == 1;
+}
+
 static bool command_loop(void)
 {
     for (;;) {
@@ -424,6 +540,18 @@ static bool command_loop(void)
 
         if (strcmp(line, "FORMAT_SD") == 0) {
             format_sd_command();
+            continue;
+        }
+
+        if (strncmp(line, "CAM_CAPTURE", 11) == 0 &&
+            (line[11] == 0 || line[11] == ' ' || line[11] == '\t')) {
+            char rel_path[128];
+            if (!parse_optional_path(line, "CAM_CAPTURE", CAM_CAPTURE_DEFAULT_PATH,
+                                     rel_path, sizeof(rel_path))) {
+                host_puts("KSD:CAPTURE_FAIL bad-args\n");
+                continue;
+            }
+            run_cam_capture_command(rel_path);
             continue;
         }
 
