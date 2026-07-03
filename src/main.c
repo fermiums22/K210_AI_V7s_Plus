@@ -11,6 +11,7 @@
 #include "sd_uart.h"
 #include "esp_uart_log.h"
 #include "esp_spi_link.h"
+#include "camera.h"
 
 #define SCREEN_ROWS 18
 #define SCREEN_Y0   0
@@ -104,6 +105,22 @@ static int mount_sd_once(void)
     return 1;
 }
 
+static void camera_probe_once(void)
+{
+    char cam[40];
+    say("Camera probe...");
+    if (cam_start(cam, sizeof(cam)) >= 0) {
+        char b[80];
+        snprintf(b, sizeof(b), "Camera %s", cam);
+        ok(b);
+        ok("KSD command CAM_CAPTURE");
+    } else {
+        char b[80];
+        snprintf(b, sizeof(b), "Camera %s", cam);
+        fail(b);
+    }
+}
+
 static void heartbeat_task(void *arg)
 {
     (void)arg;
@@ -135,6 +152,7 @@ int main(void)
     ok("LCD log overlay");
 
     int sd_ok = mount_sd_once();
+    camera_probe_once();
 
     say("UART services...");
     esp_uart_log_start();
@@ -154,7 +172,6 @@ int main(void)
     wait_status("SPI WIFI scanner");
     wait_status("NEW WIFI-SPI KESP proto");
 
-    wip("Camera module restore next");
     wip("MIC/I2S restore next");
     wip("UART STM pin map needed");
 
