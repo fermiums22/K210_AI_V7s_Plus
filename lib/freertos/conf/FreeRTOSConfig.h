@@ -135,14 +135,12 @@ enum
 #define configCHECK_FOR_STACK_OVERFLOW          1
 
 /* configASSERT behaviour
- * Diagnostic stack policy: assertions must be visible in UART logs but must not
- * kill the whole K210 service.  SD probing is allowed to fail, while KSD must
- * continue and return a command-level error to the PC. */
+ * Keep original if-statement macro shape because SDK code contains constructs
+ * like: configASSERT(expr) break; .  Diagnostic stack must log assertions but
+ * should not kill the KSD command server while we recover SD/FatFs. */
 extern void vPortFatal(const char* file, int line, const char* message);
-#define configASSERT( x ) do {                                      \
-    if( ( x ) == 0 ) {                                              \
-        printf("[ASSERT] %s:%d %s\r\n", __FILE__, __LINE__, #x);   \
-    }                                                               \
-} while(0)
+#define configASSERT( x ) if( ( x ) == 0 ) {                         \
+    printf("[ASSERT] %s:%d %s\r\n", __FILE__, __LINE__, #x);        \
+}
 
 #endif /* FREERTOS_CONFIG_H */
