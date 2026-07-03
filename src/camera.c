@@ -13,6 +13,8 @@
  *   - Output index 0 is the AI path, index 1 is the RGB565 display path.
  *   - LCD uses SPI0 octal on the same DVP data pads. Before camera capture
  *     switch the internal mux back to DVP; after capture switch it back to LCD.
+ *   - Do NOT force DVP_CFG_YUV_FORMAT here. Commit 4ac595a used the SDK RGB
+ *     path. Forcing YUV produced a valid-sized but flat 0x0420 frame.
  */
 #include "camera.h"
 #include "lcd.h"
@@ -42,6 +44,7 @@ static handle_t s_gc;
 static uint32_t s_fb[CAM_W * CAM_H / 2] __attribute__((aligned(64)));  /* RGB565 display */
 static uint32_t s_snap[CAM_W * CAM_H / 2] __attribute__((aligned(64)));/* stable RGB565 snapshot */
 static uint8_t  s_ai[CAM_W * CAM_H * 3] __attribute__((aligned(64)));  /* RGB24 planar (AI) */
+static volatile int s_frame_started;
 static volatile int s_frame_done;
 static int s_started;
 static int s_chip_id = -1;
@@ -81,6 +84,8 @@ static void cam_pins(void)
 static void on_frame(dvp_frame_event_t event, void *userdata)
 {
     (void)userdata;
+    if (event == VIDEO_FE_BEGIN)
+        s_frame_started = 1;
     if (event == VIDEO_FE_END)
         s_frame_done = 1;
 }
@@ -146,6 +151,31 @@ static void cam_probe_sync_pins(void)
     usleep(2 * 1000);
 }
 
+static int cam_frame_has_content(uint16_t *first, uint16_t *last, uint32_t *changes)
+{
+    const uint16_t *p = (const uint16_t *)s_fb;
+    const int n = CAM_W * CAM_H;
+    uint16_t a = p[0];
+    uint16_t z = p[n - 1];
+    uint32_t diff = 0;
+
+    /* Sparse scan is enough for a diagnostic guard. A real black scene still
+     * has sensor noise and line variation; a bogus DMA buffer is one repeated
+     * word such as 0x0420 over the entire frame. */
+    uint16_t prev = p[0];
+    for (int i = 0; i < n; i += 97) {
+        uint16_t v = p[i];
+        if (v != prev)
+            diff++;
+        prev = v;
+    }
+
+    if (first) *first = a;
+    if (last) *last = z;
+    if (changes) *changes = diff;
+    return diff >= 4;
+}
+
 int cam_start(char *name_out, int len)
 {
     if (s_started) {
@@ -167,8 +197,6 @@ int cam_start(char *name_out, int len)
 
     dvp_xclk_set_clock_rate(s_dvp, 24000000);
     dvp_config(s_dvp, CAM_W, CAM_H, true);          /* auto_enable: continuous */
-    volatile dvp_t *dvp = (volatile dvp_t *)DVP_BASE_ADDR;
-    dvp->dvp_cfg = (dvp->dvp_cfg & ~DVP_CFG_FORMAT_MASK) | DVP_CFG_YUV_FORMAT;
 
     dvp_set_signal(s_dvp, DVP_SIG_POWER_DOWN, false);
     usleep(20 * 1000);
@@ -247,6 +275,7 @@ static int cam_grab_once(int timeout_ms)
         return 0;
 
     volatile dvp_t *dvp = (volatile dvp_t *)DVP_BASE_ADDR;
+    s_frame_started = 0;
     s_frame_done = 0;
 
     cam_route_dvp_data(1);
@@ -255,34 +284,43 @@ static int cam_grab_once(int timeout_ms)
     cam_route_dvp_data(1);
     printf("[cam] route DVP data pads to CAMERA\n");
 
-    /* Do not rely only on the PLIC callback. Poll the DVP finish bit as well:
-     * if IRQ routing is late/noisy we still detect a completed frame. */
-    dvp->sts = DVP_STS_FRAME_START | DVP_STS_FRAME_START_WE |
-               DVP_STS_FRAME_FINISH | DVP_STS_FRAME_FINISH_WE;
+    dvp->sts |= DVP_STS_FRAME_START | DVP_STS_FRAME_START_WE |
+                DVP_STS_FRAME_FINISH | DVP_STS_FRAME_FINISH_WE;
     dvp_enable_frame(s_dvp);
 
     for (int t = 0; t < timeout_ms; t++) {
-        if (s_frame_done)
-            return 1;
-        if (dvp->sts & DVP_STS_FRAME_FINISH) {
-            dvp->sts = DVP_STS_FRAME_FINISH | DVP_STS_FRAME_FINISH_WE;
-            return 1;
+        if (s_frame_started && s_frame_done) {
+            uint16_t first, last;
+            uint32_t changes;
+            if (cam_frame_has_content(&first, &last, &changes)) {
+                printf("[cam] frame ok first=%04x last=%04x changes=%lu sts=0x%08lx cfg=0x%08lx\n",
+                       first, last, (unsigned long)changes,
+                       (unsigned long)dvp->sts, (unsigned long)dvp->dvp_cfg);
+                return 1;
+            }
+            printf("[cam] flat frame rejected first=%04x last=%04x changes=%lu sts=0x%08lx cfg=0x%08lx\n",
+                   first, last, (unsigned long)changes,
+                   (unsigned long)dvp->sts, (unsigned long)dvp->dvp_cfg);
+            s_frame_started = 0;
+            s_frame_done = 0;
+            dvp_enable_frame(s_dvp);
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 
-    printf("[cam] frame timeout sts=0x%08lx cfg=0x%08lx cmos=0x%08lx\n",
+    printf("[cam] frame timeout sts=0x%08lx cfg=0x%08lx cmos=0x%08lx started=%d done=%d\n",
            (unsigned long)dvp->sts,
            (unsigned long)dvp->dvp_cfg,
-           (unsigned long)dvp->cmos_cfg);
+           (unsigned long)dvp->cmos_cfg,
+           s_frame_started, s_frame_done);
     return 0;
 }
 
-/* Wait for the next finished frame in s_fb. Returns 1 if a frame completed. */
+/* Wait for the next valid finished frame in s_fb. Returns 1 if a frame completed. */
 static int cam_grab(void)
 {
     for (int i = 0; i < 5; i++) {
-        if (cam_grab_once(250))
+        if (cam_grab_once(350))
             return 1;
         cam_log_stream_regs("grab-timeout");
         vTaskDelay(pdMS_TO_TICKS(20));
@@ -302,7 +340,7 @@ int cam_capture_rgb565(const uint16_t **pixels, int *w, int *h)
     if (!ok) {
         cam_route_dvp_data(0);
         printf("[cam] route DVP data pads back to LCD\n");
-        printf("[cam] capture failed: no DVP frame\n");
+        printf("[cam] capture failed: no valid DVP frame\n");
         return 0;
     }
 
@@ -323,7 +361,7 @@ void cam_preview_forever(void)
 
     if (!streaming) {
         cam_route_dvp_data(0);
-        printf("[cam] no frames - GC0328 not streaming\n");
+        printf("[cam] no valid frames - GC0328 not streaming\n");
         return;
     }
 
