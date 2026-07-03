@@ -86,25 +86,6 @@ static void wip(const char *s)
     screen_line_color(b, ORANGE);
 }
 
-static int mount_sd_once(void)
-{
-    say("SD mount...");
-    amp_set(false);
-    int sd_ok = sd_mount();
-    amp_set(false);
-
-    if (!sd_ok) {
-        fail("SD FAT mount rc=-1");
-        return 0;
-    }
-
-    int n = sd_list_root();
-    char b[64];
-    snprintf(b, sizeof(b), "SD FAT root=%d", n);
-    ok(b);
-    return 1;
-}
-
 static void camera_probe_once(void)
 {
     char cam[40];
@@ -151,22 +132,21 @@ int main(void)
     ok("LCD init");
     ok("LCD log overlay");
 
-    int sd_ok = mount_sd_once();
+    /* Do not touch SD during boot.  The SD driver can block/assert while probing
+     * a bad or half-formatted card.  KSD must always start so FORMAT_SD and
+     * CAM_CAPTURE can be driven from the PC even when SD is broken. */
+    ok("SD mount deferred");
+    ok("KSD command FORMAT_SD");
+
     camera_probe_once();
 
     say("UART services...");
     esp_uart_log_start();
     ok("UART ESP bridge");
 
-    /* Start KSD even when SD mount failed. Otherwise FORMAT_SD would be impossible. */
     sd_uart_service_start();
     ok("PC UART command listener");
-    ok("KSD command FORMAT_SD");
-
-    if (sd_ok)
-        ok("ESP fast loader cmd FLASH_ESP");
-    else
-        fail("ESP loader waits SD/FORMAT_SD");
+    ok("ESP fast loader cmd FLASH_ESP");
 
     esp_spi_link_start();
     wait_status("SPI WIFI scanner");
