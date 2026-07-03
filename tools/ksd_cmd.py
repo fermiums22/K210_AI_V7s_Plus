@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import argparse
 import re
-import sys
 import time
 from pathlib import Path
 
@@ -20,7 +19,7 @@ def open_port(port: str, baud: int) -> serial.Serial:
     last = None
     while time.monotonic() < deadline:
         try:
-            ser = serial.Serial(port=port, baudrate=baud, timeout=0.2)
+            ser = serial.Serial(port=port, baudrate=baud, timeout=0.05)
             try:
                 ser.dtr = False
                 ser.rts = False
@@ -50,7 +49,7 @@ def read_ksd_line(ser: serial.Serial, timeout: float = 10.0) -> str:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            raw = read_line(ser, max(0.2, deadline - time.monotonic()))
+            raw = read_line(ser, max(0.05, deadline - time.monotonic()))
         except TimeoutError:
             break
         text = raw.decode("latin1", errors="replace").strip()
@@ -62,14 +61,25 @@ def read_ksd_line(ser: serial.Serial, timeout: float = 10.0) -> str:
     raise TimeoutError("KSD line timeout")
 
 
-def connect(ser: serial.Serial) -> None:
+def connect(ser: serial.Serial, timeout_s: float) -> None:
     ser.reset_input_buffer()
-    ser.write(b"KSD1\n")
-    ser.flush()
-    while True:
-        line = read_ksd_line(ser, 10.0)
+    deadline = time.monotonic() + timeout_s
+    next_magic = 0.0
+    print(f"[ksd] connecting for up to {timeout_s:.1f}s; reset K210 now if needed")
+    while time.monotonic() < deadline:
+        now = time.monotonic()
+        if now >= next_magic:
+            ser.write(b"KSD1\n")
+            ser.flush()
+            next_magic = now + 0.25
+        try:
+            line = read_ksd_line(ser, 0.25)
+        except TimeoutError:
+            continue
         if line == "KSD:HELLO":
+            print("[ksd] connected")
             return
+    raise SystemExit("ERROR: KSD connect timeout; press RESET on K210 and rerun")
 
 
 def wait_cmd_prompt(ser: serial.Serial) -> None:
@@ -94,10 +104,11 @@ def send_done(ser: serial.Serial) -> None:
 
 def run_simple_command(ser: serial.Serial, cmd: str) -> list[str]:
     wait_cmd_prompt(ser)
+    print(f"[ksd] cmd: {cmd}")
     ser.write((cmd + "\n").encode("ascii"))
     ser.flush()
     lines: list[str] = []
-    deadline = time.monotonic() + 20.0
+    deadline = time.monotonic() + 30.0
     while time.monotonic() < deadline:
         line = read_ksd_line(ser, max(0.2, deadline - time.monotonic()))
         lines.append(line)
@@ -124,14 +135,16 @@ def get_file(ser: serial.Serial, remote: str, local: Path) -> int:
         raise SystemExit(f"ERROR: expected KSD:SIZE, got {line}")
     size = int(m.group(1))
     print(f"[get] {remote} -> {local} ({size} bytes)")
-    data = ser.read(size)
-    while len(data) < size:
+    data = bytearray()
+    deadline = time.monotonic() + 20.0
+    while len(data) < size and time.monotonic() < deadline:
         chunk = ser.read(size - len(data))
-        if not chunk:
-            raise SystemExit(f"ERROR: short read {len(data)}/{size}")
-        data += chunk
+        if chunk:
+            data += chunk
+    if len(data) != size:
+        raise SystemExit(f"ERROR: short read {len(data)}/{size}")
     local.parent.mkdir(parents=True, exist_ok=True)
-    local.write_bytes(data)
+    local.write_bytes(bytes(data))
     ok = read_ksd_line(ser, 10.0)
     if ok != "KSD:OK":
         raise SystemExit(f"ERROR: expected KSD:OK after data, got {ok}")
@@ -145,11 +158,12 @@ def main() -> int:
     ap.add_argument("--cmd", required=True, help="Command, e.g. 'CAM_CAPTURE cam/capture.rgb565'")
     ap.add_argument("--get", dest="get_path", help="Optional remote file to GET after command")
     ap.add_argument("--out", default="logs/ksd_get.bin", help="Local output path for --get")
+    ap.add_argument("--connect-timeout", type=float, default=20.0)
     args = ap.parse_args()
 
     ser = open_port(args.port, args.baud)
     try:
-        connect(ser)
+        connect(ser, args.connect_timeout)
         lines = run_simple_command(ser, args.cmd)
         failed = any("FAIL" in x or x.startswith("KSD:ERR") for x in lines)
         if args.get_path and not failed:
