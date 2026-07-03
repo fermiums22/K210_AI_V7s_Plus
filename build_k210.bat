@@ -8,6 +8,9 @@ set "BUILD=%CD%\build"
 set "MAKE=%TC%\mingw32-make.exe"
 if not exist "%MAKE%" set "MAKE=C:\msys64\mingw64\bin\mingw32-make.exe"
 
+set "WIFI_CFG=%CD%\src\wifi_cfg.h"
+
+
 echo === K210 build ===
 echo Repo:  %CD%
 echo TC:    %TC%
@@ -27,6 +30,15 @@ where cmake >nul 2>nul
 if errorlevel 1 (
   echo ERROR: cmake not found in PATH
   exit /b 1
+)
+
+if not exist "%WIFI_CFG%" (
+  echo [cfg] src\wifi_cfg.h not found, creating local empty Wi-Fi config...
+  > "%WIFI_CFG%" echo #pragma once
+  >> "%WIFI_CFG%" echo #define WIFI_SSID ""
+  >> "%WIFI_CFG%" echo #define WIFI_PASS ""
+  echo [cfg] Edit src\wifi_cfg.h later if AT Wi-Fi mode is needed.
+  echo.
 )
 
 if not exist "%BUILD%" mkdir "%BUILD%"
