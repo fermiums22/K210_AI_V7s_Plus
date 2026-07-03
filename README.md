@@ -118,6 +118,47 @@ OK: K210 flashed.
 
 Для ESP flashing через K210 нужно запускать upload-скрипт с PC и затем нажать **RESET** на K210, чтобы PC успел попасть в это boot-window.
 
+### Подготовка microSD для K210
+
+Для текущего C/FatFs flow использовать **FAT32**, не exFAT. Практический безопасный вариант для больших карт — создать маленький раздел 4 GB FAT32 с меткой `K210SD`.
+
+Проверка карты на ПК, только чтение:
+
+```bat
+cd /d D:\w_space\K210_AI_V7s_Plus
+py -3 tools\check_sd_pc.py --drive E:
+```
+
+Ожидаемо для рабочей карты:
+
+```text
+fs    : FAT32
+label : K210SD
+```
+
+Если Windows GUI не предлагает FAT32 для 64 GB microSD, использовать `diskpart` от администратора и выбирать диск вручную по размеру/USB-ридеру. Не запускать `FORMAT_SD` на K210, пока нет уверенности, что raw SD/mount стабилен.
+
+### Проверка камеры с записью на SD
+
+Команда KSD:
+
+```text
+CAM_CAPTURE cam/capture.rgb565
+```
+
+Ожидаемый ответ:
+
+```text
+KSD:CAPTURE_OK cam/capture.rgb565 <bytes> <w> <h> RGB565
+```
+
+PC-команда, которая отправляет `CAM_CAPTURE`, затем читает файл обратно с SD через KSD `GET` и сохраняет локальную копию в `logs\capture.rgb565`:
+
+```bat
+cd /d D:\w_space\K210_AI_V7s_Plus
+py -3 tools\ksd_cmd.py --port COM12 --baud 921600 --cmd "CAM_CAPTURE cam/capture.rgb565" --get cam/capture.rgb565 --out logs\capture.rgb565
+```
+
 ## Железо (этот уровень)
 
 Идентифицировано по фото, см. [docs/hardware.md](docs/hardware.md):
@@ -135,10 +176,10 @@ OK: K210 flashed.
 Плата поднята (bring-up в процессе):
 
 - **C-прошивка K210:** собирается через `build_k210.bat`, прошивается через `flash_k210.bat COMx`.
-- **UART SD service:** K210 на старте ждёт PC host и умеет `GET flash.json`, `PUT <file> <size>`, `RESET`.
+- **UART SD service:** K210 на старте ждёт PC host и умеет `GET flash.json`, `PUT <file> <size>`, `RESET`, `CAM_CAPTURE`.
 - **ESP flashing from SD:** K210-side flasher читает `flash.json`, disarm-ит one-shot job перед прошивкой и не уходит в вечный flash loop.
 - **Дисплей:** работает через SDK LCD transport; диагностический экран показывает этапы boot/upload/flash.
-- **microSD:** монтируется, используется для payload и `flash.json`.
+- **microSD:** монтируется, используется для payload, `flash.json` и camera capture.
 - **Старый MaixPy bring-up:** камера+LCD+IDE+WiFi+аудио были проверены ранее, но текущий рабочий путь для ESP flashing — C-прошивка.
 
 ## LCD-драйвер: откуда взят (НЕ переписывать вручную!)
@@ -207,6 +248,7 @@ docs/
   photos/            — фото платы и стенда (см. photos/README.md)
 firmware/            — сюда кладём скачанные .bin прошивки MaixPy/kmodel (в git не коммитим)
 src/                 — K210 C-код
+tools/               — PC-утилиты для UART/SD диагностики
 build_k210.bat       — сборка K210 firmware
 flash_k210.bat       — прошивка K210 через kflash + DTR/RTS auto-reset
 build/               — generated build output, ignored
