@@ -140,15 +140,32 @@ static int cam_grab(void)
     if (!s_started || !s_dvp)
         return 0;
 
+    volatile dvp_t *dvp = (volatile dvp_t *)DVP_BASE_ADDR;
+
     cam_route_dvp_data(1);
     s_frame_done = 0;
+
+    /* The old preview path used the IRQ callback. For command-driven capture,
+     * also poll the hardware finish bit so a late/missed PLIC callback does not
+     * turn a real frame into a timeout. */
+    dvp->sts = DVP_STS_FRAME_START | DVP_STS_FRAME_START_WE |
+               DVP_STS_FRAME_FINISH | DVP_STS_FRAME_FINISH_WE;
     dvp_enable_frame(s_dvp);
 
     int t = 0;
-    while (!s_frame_done && t++ < 500)
+    while (t++ < 500) {
+        if (s_frame_done)
+            return 1;
+        if (dvp->sts & DVP_STS_FRAME_FINISH) {
+            dvp->sts = DVP_STS_FRAME_FINISH | DVP_STS_FRAME_FINISH_WE;
+            return 1;
+        }
         vTaskDelay(pdMS_TO_TICKS(1));
+    }
 
-    return s_frame_done;
+    printf("[cam] capture timeout sts=0x%08lx cfg=0x%08lx\n",
+           (unsigned long)dvp->sts, (unsigned long)dvp->dvp_cfg);
+    return 0;
 }
 
 int cam_capture_rgb565(const uint16_t **pixels, int *w, int *h)
@@ -161,7 +178,6 @@ int cam_capture_rgb565(const uint16_t **pixels, int *w, int *h)
 
     if (!cam_grab()) {
         cam_route_dvp_data(0);
-        printf("[cam] capture timeout\n");
         return 0;
     }
 
