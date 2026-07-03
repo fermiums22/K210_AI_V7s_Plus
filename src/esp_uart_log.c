@@ -17,6 +17,8 @@
 static volatile gpio_t *const REG_GPIO = (volatile gpio_t *)GPIO_BASE_ADDR;
 static volatile int s_spi_ready;
 static volatile int s_put_active;
+static volatile int s_running;
+static volatile int s_started;
 
 static void gpio_set(int n, int v)
 {
@@ -86,7 +88,8 @@ static void esp_uart_log_task(void *arg)
 {
     handle_t u = (handle_t)arg;
     uint8_t b[64];
-    for (;;) {
+
+    while (s_running) {
         int r = io_read(u, b, sizeof(b));
         if (r > 0) {
             for (int i = 0; i < r; i++) {
@@ -97,10 +100,32 @@ static void esp_uart_log_task(void *arg)
             vTaskDelay(pdMS_TO_TICKS(5));
         }
     }
+
+    io_close(u);
+    s_started = 0;
+    LOG("[esp-uart] bridge inactive");
+    for (;;)
+        vTaskDelay(pdMS_TO_TICKS(1000));
+}
+
+void esp_uart_log_stop(void)
+{
+    if (!s_started)
+        return;
+
+    LOG("[esp-uart] bridge pause for ESP flash");
+    s_running = 0;
+    for (int i = 0; i < 100 && s_started; i++)
+        vTaskDelay(pdMS_TO_TICKS(10));
 }
 
 void esp_uart_log_start(void)
 {
+    if (s_started) {
+        LOG("[esp-uart] bridge already running");
+        return;
+    }
+
     fpioa_set_function(PIN_ESP_TX, FUNC_UART2_RX);
     fpioa_set_function(PIN_ESP_RX, FUNC_UART2_TX);
     handle_t u = io_open("/dev/uart2");
@@ -108,8 +133,11 @@ void esp_uart_log_start(void)
         LOG("[esp-uart] open failed");
         return;
     }
+
     uart_config(u, ESP_UART_BAUD, 8, UART_STOP_1, UART_PARITY_NONE);
-    xTaskCreate(esp_uart_log_task, "esp_uart_log", 768, (void *)u, 1, NULL);
+    s_running = 1;
+    s_started = 1;
+    xTaskCreate(esp_uart_log_task, "esp_uart_log", 1024, (void *)u, 1, NULL);
     LOG("[esp-uart] bridge on 115200");
     esp_reset_normal();
 }
