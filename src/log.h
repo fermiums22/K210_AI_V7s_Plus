@@ -1,6 +1,8 @@
 #ifndef APP_LOG_H
 #define APP_LOG_H
 
+#define APP_LOG_BAUD 921600u
+
 void log_init(void);
 void log_puts(const char *s);
 void log_printf(const char *fmt, ...);
