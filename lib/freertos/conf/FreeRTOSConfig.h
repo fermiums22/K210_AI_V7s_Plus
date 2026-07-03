@@ -56,6 +56,9 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#ifdef __cplusplus
+#include <stdexcept>
+#endif
 
 /* clock */
 #define configCPU_CLOCK_HZ					uxPortGetCPUClock()
@@ -134,13 +137,21 @@ enum
 /* Diagnostics */
 #define configCHECK_FOR_STACK_OVERFLOW          1
 
-/* configASSERT behaviour
+/* configASSERT behaviour.
  * Keep original if-statement macro shape because SDK code contains constructs
- * like: configASSERT(expr) break; .  Diagnostic stack must log assertions but
- * should not kill the KSD command server while we recover SD/FatFs. */
+ * like: configASSERT(expr) break; .  In C++ drivers, assert failure is converted
+ * to an exception so install/open code can return a normal failure instead of
+ * letting FatFs operate on a half-initialized block device. */
 extern void vPortFatal(const char* file, int line, const char* message);
+#ifdef __cplusplus
 #define configASSERT( x ) if( ( x ) == 0 ) {                         \
     printf("[ASSERT] %s:%d %s\r\n", __FILE__, __LINE__, #x);        \
+    throw std::runtime_error(#x);                                    \
 }
+#else
+#define configASSERT( x ) if( ( x ) == 0 ) {                         \
+    vPortFatal(__FILE__, __LINE__, #x);                              \
+}
+#endif
 
 #endif /* FREERTOS_CONFIG_H */
