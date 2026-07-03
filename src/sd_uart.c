@@ -13,7 +13,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define UART_SD_MAGIC "KSD1\n"
+/* Keep the host sync word independent from CR/LF handling.  The PC helper sends
+ * KSD1\n, but accepting KSD1 first makes the boot-window handshake robust even if
+ * the newline is delayed, stripped, or consumed by a previous drain. */
+#define UART_SD_MAGIC "KSD1"
 #define UART_SD_BUF   512
 
 static volatile uarths_t *const REG_UARTHS = (volatile uarths_t *)UARTHS_BASE_ADDR;
@@ -89,8 +92,10 @@ static int wait_magic(uint32_t window_ms)
 
         if (c == (uint8_t)magic[mi]) {
             mi++;
-            if (magic[mi] == 0)
+            if (magic[mi] == 0) {
+                LOG("[sd-uart] magic matched");
                 return 1;
+            }
         } else {
             mi = (c == (uint8_t)magic[0]) ? 1 : 0;
         }
@@ -279,6 +284,9 @@ bool sd_uart_receive_window(uint32_t window_ms)
         diag_line(3, "UART upload: no host");
         return false;
     }
+
+    /* Clear a possible trailing CR/LF from the sync word before command mode. */
+    drain_rx(20);
 
     host_puts("KSD:HELLO\n");
     LOG("[sd-uart] host connected");
