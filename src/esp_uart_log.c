@@ -16,6 +16,7 @@
 
 static volatile gpio_t *const REG_GPIO = (volatile gpio_t *)GPIO_BASE_ADDR;
 static volatile int s_spi_ready;
+static volatile int s_put_active;
 
 static void gpio_set(int n, int v)
 {
@@ -29,9 +30,20 @@ int esp_uart_log_spi_ready(void)
     return s_spi_ready;
 }
 
+int esp_uart_log_put_active(void)
+{
+    return s_put_active;
+}
+
+void esp_uart_log_clear_put_active(void)
+{
+    s_put_active = 0;
+}
+
 static void esp_reset_normal(void)
 {
     s_spi_ready = 0;
+    s_put_active = 0;
     sysctl_clock_enable(SYSCTL_CLOCK_GPIO);
     fpioa_set_function(PIN_ESP_BOOT, FUNC_GPIO3);
     fpioa_set_function(PIN_ESP_EN, FUNC_GPIO0);
@@ -55,6 +67,10 @@ static void feed_esp_line_detector(uint8_t ch)
         if (strstr(line, "kesp: spi slave ready")) {
             s_spi_ready = 1;
             LOG("[esp-uart] SPI slave ready marker");
+        }
+        if (strstr(line, "kesp: PUT ")) {
+            s_put_active = 1;
+            LOG("[esp-uart] TCP PUT marker, enable SPI polling");
         }
         pos = 0;
         return;
