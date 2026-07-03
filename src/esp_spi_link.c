@@ -58,10 +58,31 @@ static uint8_t s_tx[RX_MAX];
 static uint8_t s_rx[RX_MAX];
 static spi_case_t s_best;
 static int s_have_best;
+static volatile int s_pause;
+static volatile int s_restart_after_pause;
+static volatile int s_started;
 
 void esp_spi_link_pause(int pause)
 {
-    (void)pause;
+    s_pause = pause ? 1 : 0;
+    if (s_pause)
+        s_restart_after_pause = 1;
+    LOGF("[pure-spi] pause=%d", s_pause);
+}
+
+static int wait_if_paused(const char *where)
+{
+    if (!s_pause)
+        return 0;
+
+    LOGF("[pure-spi] paused at %s", where);
+    s_restart_after_pause = 1;
+    while (s_pause) {
+        amp_set(false);
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    LOG("[pure-spi] resumed; restart from ESP-ready wait");
+    return 1;
 }
 
 static uint32_t rd32le(const uint8_t *p)
@@ -158,12 +179,9 @@ static void open_spi_case(const spi_case_t *c)
 static void fill_tx(uint32_t seq, int len)
 {
     memset(s_tx, 0, sizeof(s_tx));
-    for (int i = 0; i < len && i < RX_MAX; i++) {
+    for (int i = 0; i < len && i < RX_MAX; i++)
         s_tx[i] = (uint8_t)(0x80u + ((seq + (uint32_t)i) & 0x3fu));
-    }
 
-    /* Non-zero first bytes make the ESP UART preview useful and prove MOSI is not
-     * a silent all-zero stream.  The ESP reply pattern is independent of this. */
     if (len >= 4) {
         s_tx[0] = 0x11;
         s_tx[1] = 0x22;
@@ -230,13 +248,15 @@ static spi_case_t run_case(spi_case_t c)
          c.wire_len);
 
     for (uint32_t i = 0; i < TEST_WARMUP + TEST_FRAMES; i++) {
+        if (wait_if_paused("case"))
+            return c;
+
         amp_set(false);
         int r = transfer_once(&c, i);
         int off = find_magic(s_rx, r > c.wire_len ? c.wire_len : r);
 
-        if (i == TEST_WARMUP) {
+        if (i == TEST_WARMUP)
             log_sample(&c, r, off);
-        }
 
         if (i >= TEST_WARMUP) {
             if (r >= c.wire_len && off >= 0) {
@@ -271,6 +291,8 @@ static void run_scan(void)
     static const uint32_t hz_list[] = { 100000u, 500000u, 1000000u };
     static const int len_list[] = { 32, 34 };
 
+    s_have_best = 0;
+    memset(&s_best, 0, sizeof(s_best));
     LOG("[pure-spi] scan start: mode 0/1/2/3, normal/swap D0D1, hw/gpiohs CS, 32/34-byte transfers");
 
     for (int manual_cs = 0; manual_cs <= 1; manual_cs++) {
@@ -278,6 +300,8 @@ static void run_scan(void)
             for (unsigned hi = 0; hi < sizeof(hz_list) / sizeof(hz_list[0]); hi++) {
                 for (int mode = 0; mode < 4; mode++) {
                     for (unsigned li = 0; li < sizeof(len_list) / sizeof(len_list[0]); li++) {
+                        if (s_restart_after_pause)
+                            return;
                         spi_case_t c;
                         memset(&c, 0, sizeof(c));
                         c.mode = mode;
@@ -291,6 +315,9 @@ static void run_scan(void)
             }
         }
     }
+
+    if (s_restart_after_pause)
+        return;
 
     if (s_have_best) {
         LOGF("[pure-spi] VERDICT SPI_OK best mode=%d hz=%lu cs=%s map=%s len=%d good=%lu bad=%lu off=%d",
@@ -318,6 +345,9 @@ static void run_best_forever(void)
     LOG("[pure-spi] stability loop on best case");
 
     for (;;) {
+        if (wait_if_paused("stable-loop"))
+            return;
+
         amp_set(false);
         int r = transfer_once(&s_best, good + bad);
         int off = find_magic(s_rx, r > s_best.wire_len ? s_best.wire_len : r);
@@ -346,23 +376,47 @@ static void run_best_forever(void)
 
 void esp_spi_link_run_forever(void)
 {
-    amp_set(false);
-
-    LOG("[pure-spi] waiting ESP UART marker: kesp: spi slave ready");
-    while (!esp_uart_log_spi_ready()) {
-        amp_set(false);
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-
-    LOG("[pure-spi] ESP marker detected, start pure SPI peripheral scan");
-    run_scan();
-
-    if (s_have_best) {
-        run_best_forever();
-    }
-
     for (;;) {
         amp_set(false);
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        s_restart_after_pause = 0;
+
+        LOG("[pure-spi] waiting ESP UART marker: kesp: spi slave ready");
+        while (!esp_uart_log_spi_ready()) {
+            wait_if_paused("wait-ready");
+            amp_set(false);
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+
+        if (s_restart_after_pause)
+            continue;
+
+        LOG("[pure-spi] ESP marker detected, start pure SPI peripheral scan");
+        run_scan();
+
+        if (s_restart_after_pause)
+            continue;
+
+        if (s_have_best)
+            run_best_forever();
+        else
+            vTaskDelay(pdMS_TO_TICKS(1000));
     }
+}
+
+static void esp_spi_link_task(void *arg)
+{
+    (void)arg;
+    esp_spi_link_run_forever();
+}
+
+void esp_spi_link_start(void)
+{
+    if (s_started) {
+        LOG("[pure-spi] scanner task already running");
+        return;
+    }
+
+    s_started = 1;
+    xTaskCreate(esp_spi_link_task, "esp_spi", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
+    LOG("[pure-spi] scanner task started");
 }
