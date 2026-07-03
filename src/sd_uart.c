@@ -20,6 +20,7 @@
 #define UART_SD_MAGIC "KSD1"
 #define UART_SD_BUF   512
 #define UARTHS_RXDATA_EMPTY_MASK (1u << 31)
+#define UART_SD_CMD_TIMEOUT_MS 2000u
 
 static volatile uarths_t *const REG_UARTHS = (volatile uarths_t *)UARTHS_BASE_ADDR;
 static uint8_t rx_buf[UART_SD_BUF] __attribute__((aligned(64)));
@@ -93,13 +94,11 @@ static int read_line(char *out, int out_len, uint32_t timeout_ms)
     uint8_t c;
 
     hex[0] = 0;
-    LOGF("[sd-uart] read_line: waiting %lu ms", (unsigned long)timeout_ms);
 
     while (n < out_len - 1) {
         if (!read_byte_timeout(&c, timeout_ms)) {
             out[n] = 0;
-            LOGF("[sd-uart] read_line timeout after %d chars, %d bytes, hex: %s", n, bytes, hex);
-            LOGF("[sd-uart] read_line partial text: %s", out);
+            LOGF("[sd-uart] command RX timeout: chars=%d bytes=%d hex=%s text=%s", n, bytes, hex, out);
             return 0;
         }
 
@@ -109,8 +108,7 @@ static int read_line(char *out, int out_len, uint32_t timeout_ms)
 
         if (c == '\n') {
             out[n] = 0;
-            LOGF("[sd-uart] read_line done %d chars, %d bytes, hex: %s", n, bytes, hex);
-            LOGF("[sd-uart] read_line text: %s", out);
+            LOGF("[sd-uart] command RX OK: chars=%d bytes=%d hex=%s text=%s", n, bytes, hex, out);
             return 1;
         }
 
@@ -119,8 +117,7 @@ static int read_line(char *out, int out_len, uint32_t timeout_ms)
     }
 
     out[n] = 0;
-    LOGF("[sd-uart] read_line too long after %d chars, %d bytes, hex: %s", n, bytes, hex);
-    LOGF("[sd-uart] read_line partial text: %s", out);
+    LOGF("[sd-uart] command RX too long: chars=%d bytes=%d hex=%s text=%s", n, bytes, hex, out);
     return 0;
 }
 
@@ -347,13 +344,10 @@ bool sd_uart_receive_window(uint32_t window_ms)
     for (;;) {
         char line[192];
         host_puts("KSD:CMD\n");
-        LOG("[sd-uart] command prompt sent; waiting for command line");
-        if (!read_line(line, sizeof(line), 30000)) {
-            LOG("[sd-uart] command timeout");
+        if (!read_line(line, sizeof(line), UART_SD_CMD_TIMEOUT_MS)) {
             diag_line(4, "UART command timeout");
             return false;
         }
-        LOGF("[sd-uart] command line: %s", line);
 
         if (strcmp(line, "DONE") == 0) {
             host_puts("KSD:DONE\n");
