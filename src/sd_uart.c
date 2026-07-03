@@ -21,6 +21,7 @@
 #define UART_SD_BUF   512
 #define UARTHS_RXDATA_EMPTY_MASK (1u << 31)
 #define UART_SD_CMD_TIMEOUT_MS 2000u
+#define UART_SD_EMPTY_SPINS_BEFORE_YIELD 2048u
 
 static volatile uarths_t *const REG_UARTHS = (volatile uarths_t *)UARTHS_BASE_ADDR;
 static uint8_t rx_buf[UART_SD_BUF] __attribute__((aligned(64)));
@@ -75,13 +76,28 @@ static void append_hex_byte(char *dst, size_t dst_size, uint8_t c)
     snprintf(dst + len, dst_size - len, "%02lX ", (unsigned long)c);
 }
 
+static void uart_rx_yield_if_idle(uint32_t *empty_spins)
+{
+    (*empty_spins)++;
+    if (*empty_spins >= UART_SD_EMPTY_SPINS_BEFORE_YIELD) {
+        *empty_spins = 0;
+        taskYIELD();
+    }
+}
+
 static int read_byte_timeout(uint8_t *out, uint32_t timeout_ms)
 {
     TickType_t start = xTaskGetTickCount();
+    uint32_t empty_spins = 0;
+
     while (!deadline_expired(start, timeout_ms)) {
         if (uarths_try_read_byte(out))
             return 1;
-        poll_delay();
+
+        /* Do not sleep for a whole RTOS tick between UART bytes. At 115200 baud
+         * the next byte can arrive ~87 us later; vTaskDelay(1) here can overflow
+         * the tiny UARTHS RX FIFO during raw PUT. Keep polling and only yield. */
+        uart_rx_yield_if_idle(&empty_spins);
     }
     return 0;
 }
@@ -222,7 +238,11 @@ static bool receive_file(const char *rel_path, uint32_t size)
         return false;
     }
 
+    /* KSD:GO only means that PUT was accepted and the file is open.
+     * KSD:READYDATA is the real data-mode edge: after this line returns to the
+     * host, this task is already prepared to read the first raw binary byte. */
     host_puts("KSD:GO\n");
+    host_puts("KSD:READYDATA\n");
 
     uint32_t got = 0;
     while (got < size) {
@@ -251,15 +271,14 @@ static bool receive_file(const char *rel_path, uint32_t size)
         }
 
         got += chunk;
-        if ((got % (32u * 1024u)) == 0 || got == size) {
-            LOGF("[sd-uart] recv %s %lu/%lu", rel_path, (unsigned long)got, (unsigned long)size);
+        if ((got % (32u * 1024u)) == 0 || got == size)
             diag_printf(5, "UART %lu/%lu", (unsigned long)got, (unsigned long)size);
-        }
         host_puts("KSD:B\n");
     }
 
     filesystem_file_close(f);
     host_puts("KSD:OK\n");
+    LOGF("[sd-uart] received %s %lu", rel_path, (unsigned long)size);
     return true;
 }
 
