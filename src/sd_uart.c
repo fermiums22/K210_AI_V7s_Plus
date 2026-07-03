@@ -71,7 +71,7 @@ static void append_hex_byte(char *dst, size_t dst_size, uint8_t c)
     size_t len = strlen(dst);
     if (len + 4 >= dst_size)
         return;
-    snprintf(dst + len, dst_size - len, "%02X ", (unsigned)c);
+    snprintf(dst + len, dst_size - len, "%02lX ", (unsigned long)c);
 }
 
 static int read_byte_timeout(uint8_t *out, uint32_t timeout_ms)
