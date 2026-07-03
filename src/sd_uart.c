@@ -9,6 +9,7 @@
 #include <platform.h>
 #include <sysctl.h>
 #include <uarths.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,16 +19,20 @@
  * the newline is delayed, stripped, or consumed by a previous drain. */
 #define UART_SD_MAGIC "KSD1"
 #define UART_SD_BUF   512
+#define UARTHS_RXDATA_EMPTY_MASK (1u << 31)
 
 static volatile uarths_t *const REG_UARTHS = (volatile uarths_t *)UARTHS_BASE_ADDR;
 static uint8_t rx_buf[UART_SD_BUF] __attribute__((aligned(64)));
 
 static int uarths_try_read_byte(uint8_t *out)
 {
-    uarths_rxdata_t recv = REG_UARTHS->rxdata;
-    if (recv.empty)
+    /* UARTHS rxdata is SiFive-style: bit31 is EMPTY, bits[7:0] are DATA.
+     * Use a raw register read instead of the SDK bitfield type so RX polling is
+     * not dependent on compiler bitfield layout. */
+    uint32_t raw = *(volatile uint32_t *)&REG_UARTHS->rxdata;
+    if (raw & UARTHS_RXDATA_EMPTY_MASK)
         return 0;
-    *out = recv.data;
+    *out = (uint8_t)(raw & 0xffu);
     return 1;
 }
 
