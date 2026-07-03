@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import re
 import time
 from pathlib import Path
 
@@ -21,6 +22,12 @@ def log_line(f, line: str) -> None:
     print(line, flush=True)
     f.write((line + "\n").encode("utf-8", errors="replace"))
     f.flush()
+
+
+def safe_log_name(text: str) -> str:
+    name = "_".join(text.strip().split())
+    name = re.sub(r"[^A-Za-z0-9_.-]+", "_", name)
+    return name.strip("._") or "command"
 
 
 def command_terminals(command: str) -> tuple[set[str], set[str]]:
@@ -53,7 +60,7 @@ def main() -> int:
 
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    safe_cmd = "_".join(args.command.strip().split())
+    safe_cmd = safe_log_name(args.command)
     log_path = LOG_DIR / f"ksd_command_{safe_cmd}_{stamp}.log"
 
     with log_path.open("wb") as f:
