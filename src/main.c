@@ -9,8 +9,6 @@
 #include "lcd.h"
 #include "sd.h"
 #include "sd_uart.h"
-#include "esp_uart_log.h"
-#include "esp_spi_link.h"
 #include "camera.h"
 
 #define SCREEN_ROWS 18
@@ -23,7 +21,7 @@ static int s_row;
 static void screen_clear(void)
 {
     lcd_clear(BLACK);
-    lcd_draw_string_bg(0, 0, "K210 STACK DIAG", YELLOW, BLACK);
+    lcd_draw_string_bg(0, 0, "K210 CAM/SD TEST", YELLOW, BLACK);
     lcd_draw_string_bg(0, 16, "UART: COM12 921600", CYAN, BLACK);
     s_row = 2;
 }
@@ -70,22 +68,6 @@ static void fail(const char *s)
     screen_line_color(b, RED);
 }
 
-static void wait_status(const char *s)
-{
-    char b[96];
-    snprintf(b, sizeof(b), "[WAIT] %s", s);
-    LOG(b);
-    screen_line_color(b, CYAN);
-}
-
-static void wip(const char *s)
-{
-    char b[96];
-    snprintf(b, sizeof(b), "[WIP] %s", s);
-    LOG(b);
-    screen_line_color(b, ORANGE);
-}
-
 static void camera_probe_once(void)
 {
     char cam[40];
@@ -94,7 +76,7 @@ static void camera_probe_once(void)
         char b[80];
         snprintf(b, sizeof(b), "Camera %s", cam);
         ok(b);
-        ok("KSD command CAM_CAPTURE");
+        ok("KSD CAM_CAPTURE ready");
     } else {
         char b[80];
         snprintf(b, sizeof(b), "Camera %s", cam);
@@ -102,27 +84,15 @@ static void camera_probe_once(void)
     }
 }
 
-static void heartbeat_task(void *arg)
-{
-    (void)arg;
-    uint32_t t = 0;
-    for (;;) {
-        amp_set(false);
-        LOGF("[stack] alive tick=%lu", (unsigned long)t++);
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-}
-
 int main(void)
 {
     log_init();
-    LOG("[stack] K210 diagnostic stack boot");
-    LOG("[stack] build target: K210 LCD/CAM/AUDIO/SD/UART/SPI bring-up checkpoint");
+    LOG("[stack] K210 camera/SD test boot");
     ok("UART LOG PC");
 
     amp_init();
     amp_set(false);
-    ok("Audio AMP control");
+    ok("Audio AMP off");
 
     lcd_init();
     lcd_set_direction(DIR_YX_LRUD);
@@ -130,34 +100,14 @@ int main(void)
     s_screen_ready = 1;
     screen_clear();
     ok("LCD init");
-    ok("LCD log overlay");
 
-    /* Do not touch SD during boot.  The SD driver can block/assert while probing
-     * a bad or half-formatted card.  KSD must always start so FORMAT_SD and
-     * CAM_CAPTURE can be driven from the PC even when SD is broken. */
     ok("SD mount deferred");
-    ok("KSD command FORMAT_SD");
-
     camera_probe_once();
 
-    say("UART services...");
-    esp_uart_log_start();
-    ok("UART ESP bridge");
-
     sd_uart_service_start();
-    ok("PC UART command listener");
-    ok("ESP fast loader cmd FLASH_ESP");
+    ok("PC UART KSD listener");
+    say("Idle. Use CAM_CAPTURE capture.rgb565");
 
-    esp_spi_link_start();
-    wait_status("SPI WIFI scanner");
-    wait_status("NEW WIFI-SPI KESP proto");
-
-    wip("MIC/I2S restore next");
-    wip("UART STM pin map needed");
-
-    xTaskCreate(heartbeat_task, "stack_hb", 1024, NULL, tskIDLE_PRIORITY + 1, NULL);
-
-    say("Stack diag idle");
     for (;;) {
         amp_set(false);
         vTaskDelay(pdMS_TO_TICKS(1000));
