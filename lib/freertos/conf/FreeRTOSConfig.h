@@ -56,9 +56,6 @@
 
 #include <stdint.h>
 #include <stdio.h>
-#ifdef __cplusplus
-#include <stdexcept>
-#endif
 
 /* clock */
 #define configCPU_CLOCK_HZ					uxPortGetCPUClock()
@@ -139,14 +136,14 @@ enum
 
 /* configASSERT behaviour.
  * Keep original if-statement macro shape because SDK code contains constructs
- * like: configASSERT(expr) break; .  In C++ drivers, assert failure is converted
- * to an exception so install/open code can return a normal failure instead of
- * letting FatFs operate on a half-initialized block device. */
+ * like: configASSERT(expr) break; .  In C++ drivers, assert failure is thrown
+ * without pulling C++ headers into FreeRTOSConfig.h, which is included from an
+ * extern "C" block by this SDK. */
 extern void vPortFatal(const char* file, int line, const char* message);
 #ifdef __cplusplus
 #define configASSERT( x ) if( ( x ) == 0 ) {                         \
     printf("[ASSERT] %s:%d %s\r\n", __FILE__, __LINE__, #x);        \
-    throw std::runtime_error(#x);                                    \
+    throw #x;                                                        \
 }
 #else
 #define configASSERT( x ) if( ( x ) == 0 ) {                         \
