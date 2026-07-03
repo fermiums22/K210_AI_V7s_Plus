@@ -23,6 +23,24 @@ def log_line(f, line: str) -> None:
     f.flush()
 
 
+def command_terminals(command: str) -> tuple[set[str], set[str]]:
+    """Return KSD terminal response prefixes for a one-shot command."""
+    cmd = command.strip().split(maxsplit=1)[0].upper()
+
+    if cmd == "FORMAT_SD":
+        return {"KSD:FORMAT_OK"}, {"KSD:FORMAT_FAIL"}
+    if cmd == "CAM_CAPTURE":
+        return {"KSD:CAPTURE_OK"}, {"KSD:CAPTURE_FAIL"}
+    if cmd == "FLASH_ESP":
+        return {"KSD:FLASH_OK"}, {"KSD:FLASH_FAIL"}
+    if cmd == "RUN_SPI":
+        return {"KSD:RUNSPI"}, set()
+    if cmd == "RESET":
+        return {"KSD:RESETTING"}, set()
+
+    return {"KSD:OK", "KSD:DONE"}, {"KSD:ERR", "KSD:MISSING"}
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Send one command to K210 KSD service")
     ap.add_argument("--port", default="COM12")
@@ -31,9 +49,12 @@ def main() -> int:
     ap.add_argument("--timeout", type=float, default=120.0)
     args = ap.parse_args()
 
+    ok_prefixes, fail_prefixes = command_terminals(args.command)
+
     LOG_DIR.mkdir(parents=True, exist_ok=True)
     stamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = LOG_DIR / f"ksd_command_{args.command}_{stamp}.log"
+    safe_cmd = "_".join(args.command.strip().split())
+    log_path = LOG_DIR / f"ksd_command_{safe_cmd}_{stamp}.log"
 
     with log_path.open("wb") as f:
         print("=== K210 KSD command ===")
@@ -81,21 +102,20 @@ def main() -> int:
                     sent_cmd = True
                     continue
 
-                if sent_cmd and "KSD:FORMAT_OK" in line:
+                if not sent_cmd or not line:
+                    continue
+
+                if any(line.startswith(prefix) for prefix in ok_prefixes):
                     ser.write(b"DONE\n")
                     ser.flush()
                     print(f"OK: {args.command} completed. Log: {log_path}")
                     return 0
 
-                if sent_cmd and "KSD:FORMAT_FAIL" in line:
+                if any(line.startswith(prefix) for prefix in fail_prefixes):
                     ser.write(b"DONE\n")
                     ser.flush()
                     print(f"FAILED: {args.command}. Log: {log_path}")
                     return 1
-
-                if sent_cmd and line.startswith("KSD:") and args.command != "FORMAT_SD":
-                    print(f"DONE: saw response {line}. Log: {log_path}")
-                    return 0
 
             print(f"ERROR: timeout waiting for {args.command}. Log: {log_path}")
             return 3
