@@ -32,9 +32,8 @@ static void screen_line_color(const char *s, uint16_t color)
     if (!s_screen_ready)
         return;
 
-    if (s_row >= SCREEN_ROWS) {
+    if (s_row >= SCREEN_ROWS)
         screen_clear();
-    }
 
     char line[40];
     memset(line, ' ', sizeof(line));
@@ -141,14 +140,15 @@ int main(void)
     esp_uart_log_start();
     ok("UART ESP bridge");
 
-    if (sd_ok) {
-        sd_uart_service_start();
-        ok("PC UART command listener");
+    /* Start KSD even when SD mount failed. Otherwise FORMAT_SD would be impossible. */
+    sd_uart_service_start();
+    ok("PC UART command listener");
+    ok("KSD command FORMAT_SD");
+
+    if (sd_ok)
         ok("ESP fast loader cmd FLASH_ESP");
-    } else {
-        fail("PC UART KSD waits SD");
-        fail("ESP fast loader waits SD");
-    }
+    else
+        fail("ESP loader waits SD/FORMAT_SD");
 
     esp_spi_link_start();
     wait_status("SPI WIFI scanner");
