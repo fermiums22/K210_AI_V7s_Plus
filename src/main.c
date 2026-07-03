@@ -46,13 +46,14 @@ int main(void)
         diag_printf(3, "SD OK, root entries=%d", n);
         amp_set(false);
 
-        /* UART SD service window for the PC helper script.
-         * Host can GET current flash.json, PUT payload files, PUT patched
-         * flash.json, then command RESET. If no host is present, boot proceeds
-         * normally after a short window. */
-        sd_uart_receive_window(5000);
+        /* Initial short KSD window for a PC helper that catches the boot.
+         * After boot, sd_uart_service_start() keeps the same command protocol
+         * alive in the background, so the normal ESP-only workflow no longer
+         * needs to reset K210 just to upload files or start ESP flashing. */
+        sd_uart_receive_window(1500);
 
         esp_flash_run_if_requested();
+        sd_uart_service_start();
     } else {
         LOG("[main] sd failed");
         diag_line(3, "SD FAILED");
