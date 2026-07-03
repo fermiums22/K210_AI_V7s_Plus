@@ -38,7 +38,7 @@
 /  f_findnext(). (0:Disable, 1:Enable 2:Enable with matching altname[] too) */
 
 
-#define FF_USE_MKFS		0
+#define FF_USE_MKFS		1
 /* This option switches f_mkfs() function. (0:Disable or 1:Enable) */
 
 
@@ -213,7 +213,7 @@
 /
 /  bit0=0: Use free cluster count in the FSINFO if available.
 /  bit0=1: Do not trust free cluster count in the FSINFO.
-/  bit1=0: Use last allocated cluster number in the FSINFO if available.
+/  bit1=0: Use last allocated cluster number in the FSINFO.
 /  bit1=1: Do not trust last allocated cluster number in the FSINFO.
 */
 
