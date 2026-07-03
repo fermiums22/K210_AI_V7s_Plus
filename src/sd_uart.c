@@ -1,6 +1,8 @@
 #include "sd_uart.h"
 #include "log.h"
 #include "diag_screen.h"
+#include "esp_flasher.h"
+#include "esp_spi_link.h"
 
 #include <FreeRTOS.h>
 #include <task.h>
@@ -18,7 +20,7 @@
  * KSD1\n, but accepting KSD1 first makes the boot-window handshake robust even if
  * the newline is delayed, stripped, or consumed by a previous drain. */
 #define UART_SD_MAGIC "KSD1"
-#define UART_SD_BUF   128
+#define UART_SD_BUF   512
 #define UARTHS_RXDATA_EMPTY_MASK (1u << 31)
 #define UART_SD_CMD_TIMEOUT_MS 2000u
 #define UART_SD_DATA_TIMEOUT_MS 15000u
@@ -26,6 +28,7 @@
 
 static volatile uarths_t *const REG_UARTHS = (volatile uarths_t *)UARTHS_BASE_ADDR;
 static uint8_t rx_buf[UART_SD_BUF] __attribute__((aligned(64)));
+static volatile int s_service_started;
 
 static TickType_t ms_to_ticks_min(uint32_t ms)
 {
@@ -239,7 +242,9 @@ static bool receive_file(const char *rel_path, uint32_t size)
         return false;
     }
 
-    host_puts("KSD:GO\n");
+    char hdr[64];
+    snprintf(hdr, sizeof(hdr), "KSD:GO %lu\n", (unsigned long)sizeof(rx_buf));
+    host_puts(hdr);
     host_puts("KSD:READYDATA\n");
 
     uint32_t got = 0;
@@ -340,24 +345,20 @@ static void board_reset(void)
         vTaskDelay(ms_to_ticks_min(1000));
 }
 
-bool sd_uart_receive_window(uint32_t window_ms)
+static bool run_esp_flash_command(void)
 {
-    LOGF("[sd-uart] waiting %lu ms for UART upload", (unsigned long)window_ms);
-    diag_printf(3, "UART upload: waiting %lu s", (unsigned long)(window_ms / 1000));
-    drain_rx(300);
+    host_puts("KSD:FLASHING\n");
+    LOG("[sd-uart] host requested ESP flash");
+    diag_line(6, "UART ESP flash requested");
+    esp_spi_link_pause(1);
+    bool ok = esp_flash_run_if_requested();
+    esp_spi_link_pause(0);
+    host_puts(ok ? "KSD:FLASH_OK\n" : "KSD:FLASH_FAIL\n");
+    return ok;
+}
 
-    if (!wait_magic(window_ms)) {
-        diag_line(3, "UART upload: no host");
-        return false;
-    }
-
-    /* Clear a possible trailing CR/LF from the sync word before command mode. */
-    drain_rx(20);
-
-    host_puts("KSD:HELLO\n");
-    LOG("[sd-uart] host connected");
-    diag_line(3, "UART upload: connected");
-
+static bool command_loop(void)
+{
     for (;;) {
         char line[192];
         host_puts("KSD:CMD\n");
@@ -366,15 +367,20 @@ bool sd_uart_receive_window(uint32_t window_ms)
             return false;
         }
 
-        if (strcmp(line, "DONE") == 0) {
-            host_puts("KSD:DONE\n");
-            LOG("[sd-uart] upload done");
+        if (strcmp(line, "DONE") == 0 || strcmp(line, "RUN_SPI") == 0) {
+            host_puts(strcmp(line, "RUN_SPI") == 0 ? "KSD:RUNSPI\n" : "KSD:DONE\n");
+            LOG("[sd-uart] upload/session done");
             diag_line(3, "UART upload: done");
             return true;
         }
 
         if (strcmp(line, "RESET") == 0) {
             board_reset();
+        }
+
+        if (strcmp(line, "FLASH_ESP") == 0) {
+            run_esp_flash_command();
+            continue;
         }
 
         char rel_path[128];
@@ -398,4 +404,49 @@ bool sd_uart_receive_window(uint32_t window_ms)
         host_puts("KSD:ERR command\n");
         return false;
     }
+}
+
+bool sd_uart_receive_window(uint32_t window_ms)
+{
+    LOGF("[sd-uart] waiting %lu ms for UART upload", (unsigned long)window_ms);
+    diag_printf(3, "UART upload: waiting %lu s", (unsigned long)(window_ms / 1000));
+    drain_rx(300);
+
+    if (!wait_magic(window_ms)) {
+        diag_line(3, "UART upload: no host");
+        return false;
+    }
+
+    /* Clear a possible trailing CR/LF from the sync word before command mode. */
+    drain_rx(20);
+
+    host_puts("KSD:HELLO\n");
+    LOG("[sd-uart] host connected");
+    diag_line(3, "UART upload: connected");
+    return command_loop();
+}
+
+static void sd_uart_task(void *arg)
+{
+    (void)arg;
+    LOG("[sd-uart] persistent service started");
+    for (;;) {
+        if (!wait_magic(1000)) {
+            vTaskDelay(ms_to_ticks_min(20));
+            continue;
+        }
+        drain_rx(20);
+        host_puts("KSD:HELLO\n");
+        LOG("[sd-uart] persistent host connected");
+        diag_line(3, "UART service: connected");
+        command_loop();
+    }
+}
+
+void sd_uart_service_start(void)
+{
+    if (s_service_started)
+        return;
+    s_service_started = 1;
+    xTaskCreate(sd_uart_task, "ksd", 4096, NULL, tskIDLE_PRIORITY + 2, NULL);
 }
