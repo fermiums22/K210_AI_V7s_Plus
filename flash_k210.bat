@@ -32,7 +32,7 @@ if errorlevel 1 (
 
 echo.
 echo [ports] Checking selected port %PORT% ...
-py -3 -c "import serial, sys; p=sys.argv[1]; ports=[x.device.upper() for x in serial.tools.list_ports.comports()]; print('found=' + ', '.join(ports) if ports else 'found=none'); sys.exit(0 if p.upper() in ports else 2)" %PORT%
+py -3 -c "import sys; import serial.tools.list_ports as lp; p=sys.argv[1].upper(); ports=[x.device.upper() for x in lp.comports()]; print('found=' + ', '.join(ports) if ports else 'found=none'); sys.exit(0 if p in ports else 2)" %PORT%
 if errorlevel 1 (
   echo ERROR: selected port %PORT% was not found.
   echo Pick one of the COM ports listed above and run: flash_k210.bat COMx
