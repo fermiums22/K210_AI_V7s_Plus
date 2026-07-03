@@ -62,11 +62,22 @@ static void dvp_start_convert(void)
     dvp->sts = DVP_STS_DVP_EN | DVP_STS_DVP_EN_WE;
 }
 
-static void dvp_clear_frame_flags(void)
+static void dvp_clear_start(void)
 {
     volatile dvp_t *dvp = (volatile dvp_t *)DVP_BASE_ADDR;
-    dvp->sts = DVP_STS_FRAME_START | DVP_STS_FRAME_START_WE |
-               DVP_STS_FRAME_FINISH | DVP_STS_FRAME_FINISH_WE;
+    dvp->sts = DVP_STS_FRAME_START | DVP_STS_FRAME_START_WE;
+}
+
+static void dvp_clear_finish(void)
+{
+    volatile dvp_t *dvp = (volatile dvp_t *)DVP_BASE_ADDR;
+    dvp->sts = DVP_STS_FRAME_FINISH | DVP_STS_FRAME_FINISH_WE;
+}
+
+static void dvp_clear_frame_flags(void)
+{
+    dvp_clear_start();
+    dvp_clear_finish();
 }
 
 static void dvp_maixpy_config(void)
@@ -196,11 +207,25 @@ static int cam_grab(void)
     s_frame_started = 0;
     s_frame_done = 0;
     dvp_clear_frame_flags();
-    dvp_start_convert();
 
     int t = 0;
-    while (!s_frame_done && t++ < 1000)
+    while (!s_frame_done && t++ < 1000) {
+        uint32_t sts = dvp->sts;
+
+        if ((sts & DVP_STS_FRAME_START) && !s_frame_started) {
+            s_frame_started = 1;
+            dvp_start_convert();
+            dvp_clear_start();
+        }
+
+        if (sts & DVP_STS_FRAME_FINISH) {
+            s_frame_done = 1;
+            dvp_clear_finish();
+            break;
+        }
+
         vTaskDelay(pdMS_TO_TICKS(1));
+    }
 
     if (!s_frame_done) {
         printf("[cam] timeout start=%d sts=0x%08lx cfg=0x%08lx\n",
