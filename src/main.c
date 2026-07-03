@@ -9,7 +9,6 @@
 #include "lcd.h"
 #include "sd.h"
 #include "sd_uart.h"
-#include "camera.h"
 
 #define SCREEN_ROWS 18
 #define SCREEN_Y0   0
@@ -60,30 +59,6 @@ static void ok(const char *s)
     screen_line_color(b, GREEN);
 }
 
-static void fail(const char *s)
-{
-    char b[96];
-    snprintf(b, sizeof(b), "[FAIL] %s", s);
-    LOG(b);
-    screen_line_color(b, RED);
-}
-
-static void camera_probe_once(void)
-{
-    char cam[40];
-    say("Camera probe...");
-    if (cam_start(cam, sizeof(cam)) >= 0) {
-        char b[80];
-        snprintf(b, sizeof(b), "Camera %s", cam);
-        ok(b);
-        ok("KSD CAM_CAPTURE ready");
-    } else {
-        char b[80];
-        snprintf(b, sizeof(b), "Camera %s", cam);
-        fail(b);
-    }
-}
-
 int main(void)
 {
     log_init();
@@ -102,7 +77,7 @@ int main(void)
     ok("LCD init");
 
     ok("SD mount deferred");
-    camera_probe_once();
+    ok("Camera lazy start");
 
     sd_uart_service_start();
     ok("PC UART KSD listener");
