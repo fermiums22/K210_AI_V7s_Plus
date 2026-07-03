@@ -9,10 +9,13 @@
 #include <gpio.h>
 #include <sysctl.h>
 #include <uarths.h>
+#include <string.h>
 
 #define ESP_UART_BAUD 115200
+#define ESP_LINE_MAX 128
 
 static volatile gpio_t *const REG_GPIO = (volatile gpio_t *)GPIO_BASE_ADDR;
+static volatile int s_spi_ready;
 
 static void gpio_set(int n, int v)
 {
@@ -21,8 +24,14 @@ static void gpio_set(int n, int v)
     else REG_GPIO->data_output.u32[0] &= ~(1u << n);
 }
 
+int esp_uart_log_spi_ready(void)
+{
+    return s_spi_ready;
+}
+
 static void esp_reset_normal(void)
 {
+    s_spi_ready = 0;
     sysctl_clock_enable(SYSCTL_CLOCK_GPIO);
     fpioa_set_function(PIN_ESP_BOOT, FUNC_GPIO3);
     fpioa_set_function(PIN_ESP_EN, FUNC_GPIO0);
@@ -33,6 +42,30 @@ static void esp_reset_normal(void)
     vTaskDelay(pdMS_TO_TICKS(300));
 }
 
+static void feed_esp_line_detector(uint8_t ch)
+{
+    static char line[ESP_LINE_MAX];
+    static unsigned pos;
+
+    if (ch == '\r')
+        return;
+
+    if (ch == '\n') {
+        line[pos] = 0;
+        if (strstr(line, "kesp: spi slave ready")) {
+            s_spi_ready = 1;
+            LOG("[esp-uart] SPI slave ready marker");
+        }
+        pos = 0;
+        return;
+    }
+
+    if (pos + 1 < sizeof(line))
+        line[pos++] = (char)ch;
+    else
+        pos = 0;
+}
+
 static void esp_uart_log_task(void *arg)
 {
     handle_t u = (handle_t)arg;
@@ -40,8 +73,10 @@ static void esp_uart_log_task(void *arg)
     for (;;) {
         int r = io_read(u, b, sizeof(b));
         if (r > 0) {
-            for (int i = 0; i < r; i++)
+            for (int i = 0; i < r; i++) {
+                feed_esp_line_detector(b[i]);
                 uarths_write_byte(b[i]);
+            }
         } else {
             vTaskDelay(pdMS_TO_TICKS(5));
         }
@@ -58,7 +93,7 @@ void esp_uart_log_start(void)
         return;
     }
     uart_config(u, ESP_UART_BAUD, 8, UART_STOP_1, UART_PARITY_NONE);
-    xTaskCreate(esp_uart_log_task, "esp_uart_log", 512, (void *)u, 1, NULL);
+    xTaskCreate(esp_uart_log_task, "esp_uart_log", 768, (void *)u, 1, NULL);
     LOG("[esp-uart] bridge on 115200");
     esp_reset_normal();
 }
