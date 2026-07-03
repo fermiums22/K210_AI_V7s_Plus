@@ -10,6 +10,8 @@
 #include "esp_flasher.h"
 #include "sd_uart.h"
 #include "diag_screen.h"
+#include "esp_spi_link.h"
+#include "esp_uart_log.h"
 
 int main(void)
 {
@@ -43,9 +45,6 @@ int main(void)
         LOGF("[main] sd ok, root entries=%d", n);
         diag_printf(3, "SD OK, root entries=%d", n);
         amp_set(false);
-        if (!esp_flash_marker_present())
-            sd_uart_receive_window(120000);
-        amp_set(false);
         esp_flash_run_if_requested();
     } else {
         LOG("[main] sd failed");
@@ -54,9 +53,8 @@ int main(void)
     LOG("[main] sd step done");
 
     amp_set(false);
-    LOG("[main] diagnostics idle");
-    diag_line(12, "Diagnostics idle. Show disabled.");
-
-    for (;;)
-        vTaskDelay(pdMS_TO_TICKS(1000));
+    LOG("[main] entering WiFi/SPI receiver");
+    diag_line(12, "WiFi/SPI receiver");
+    esp_uart_log_start();
+    esp_spi_link_run_forever();
 }

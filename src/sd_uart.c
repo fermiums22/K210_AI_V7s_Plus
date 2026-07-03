@@ -142,6 +142,9 @@ static bool receive_file(const char *rel_path, uint32_t size)
 
     char path[160];
     snprintf(path, sizeof(path), "/fs/0/%s", rel_path);
+    char fat_path[160];
+    snprintf(fat_path, sizeof(fat_path), "0:/%s", rel_path);
+    f_unlink(fat_path);
     handle_t f = filesystem_file_open(path, FILE_ACCESS_WRITE, FILE_MODE_CREATE_ALWAYS);
     if (!f) {
         LOGF("[sd-uart] open failed: %s", path);

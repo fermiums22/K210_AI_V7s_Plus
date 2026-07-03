@@ -12,16 +12,16 @@
 #include <platform.h>
 #include <sysctl.h>
 #include <uart.h>
-#include <ff.h>
 #include <stdarg.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <esp_loader.h>
 #include <esp_loader_io.h>
 
 #define ESP_FLASH_BAUD       115200u
-#define ESP_FLASH_BLOCK      256u
+#define ESP_FLASH_BLOCK      64u
 
 typedef struct {
     esp_loader_port_t port;
@@ -33,6 +33,17 @@ typedef struct {
 static k210_esp_port_t s_port;
 static uint8_t s_flash_buf[ESP_FLASH_BLOCK] __attribute__((aligned(64)));
 static volatile gpio_t *const REG_GPIO = (volatile gpio_t *)GPIO_BASE_ADDR;
+
+typedef struct {
+    char path[96];
+    uint32_t offset;
+} flash_part_t;
+
+typedef struct {
+    bool enabled;
+    int part_count;
+    flash_part_t parts[8];
+} esp_flash_job_t;
 
 static void gpio_out_set(int gpio_n, int val)
 {
@@ -284,7 +295,7 @@ bool esp_flash_file(const char *path, uint32_t offset)
         .offset = offset,
         .image_size = image_size,
         .block_size = sizeof(s_flash_buf),
-        .skip_verify = true,
+        .skip_verify = false,
     };
 
     err = esp_loader_flash_start(&loader, &cfg);
@@ -328,6 +339,7 @@ bool esp_flash_file(const char *path, uint32_t offset)
             filesystem_file_close(f);
             return false;
         }
+        vTaskDelay(pdMS_TO_TICKS(1));
 
         sent += chunk;
         if ((sent % (32u * 1024u)) == 0 || sent == image_size) {
@@ -356,34 +368,287 @@ bool esp_flash_file(const char *path, uint32_t offset)
     return true;
 }
 
-bool esp_flash_marker_present(void)
+static bool file_present(const char *path)
 {
-    handle_t marker = filesystem_file_open(ESP_FLASH_DEFAULT_MARKER, FILE_ACCESS_READ, FILE_MODE_OPEN_EXISTING);
-    if (!marker)
+    handle_t f = filesystem_file_open(path, FILE_ACCESS_READ, FILE_MODE_OPEN_EXISTING);
+    if (!f)
         return false;
-    filesystem_file_close(marker);
+    filesystem_file_close(f);
+    return true;
+}
+
+static char *find_key(char *start, const char *key)
+{
+    char needle[32];
+    snprintf(needle, sizeof(needle), "\"%s\"", key);
+    return strstr(start, needle);
+}
+
+static bool json_bool_or_int(char *section, const char *key)
+{
+    char *p = find_key(section, key);
+    if (!p)
+        return false;
+    p = strchr(p, ':');
+    if (!p)
+        return false;
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n')
+        p++;
+    return *p == '1' || strncmp(p, "true", 4) == 0;
+}
+
+static bool json_string(char *section, const char *key, char *out, size_t out_size)
+{
+    char *p = find_key(section, key);
+    if (!p)
+        return false;
+    p = strchr(p, ':');
+    if (!p)
+        return false;
+    p++;
+    while (*p && *p != '"')
+        p++;
+    if (*p != '"')
+        return false;
+    p++;
+
+    size_t n = 0;
+    while (*p && *p != '"' && n + 1 < out_size)
+        out[n++] = *p++;
+    out[n] = 0;
+    return n > 0;
+}
+
+static bool json_u32(char *section, const char *key, uint32_t *out)
+{
+    char tmp[24];
+    char *p = find_key(section, key);
+    if (!p)
+        return false;
+    p = strchr(p, ':');
+    if (!p)
+        return false;
+    p++;
+    while (*p == ' ' || *p == '\t' || *p == '"' || *p == '\r' || *p == '\n')
+        p++;
+
+    size_t n = 0;
+    while (p[n] && p[n] != '"' && p[n] != ',' && p[n] != '}' &&
+           p[n] != '\r' && p[n] != '\n' && n + 1 < sizeof(tmp)) {
+        tmp[n] = p[n];
+        n++;
+    }
+    tmp[n] = 0;
+    *out = (uint32_t)strtoul(tmp, NULL, 0);
+    return n > 0;
+}
+
+static char *json_object_end(char *section)
+{
+    char *p = strchr(section, '{');
+    if (!p)
+        return NULL;
+
+    int depth = 0;
+    bool in_str = false;
+    bool esc = false;
+    for (; *p; p++) {
+        if (esc) {
+            esc = false;
+            continue;
+        }
+        if (*p == '\\' && in_str) {
+            esc = true;
+            continue;
+        }
+        if (*p == '"') {
+            in_str = !in_str;
+            continue;
+        }
+        if (in_str)
+            continue;
+        if (*p == '{')
+            depth++;
+        else if (*p == '}') {
+            depth--;
+            if (depth == 0)
+                return p;
+        }
+    }
+    return NULL;
+}
+
+static bool make_fs_path(const char *name, char *out, size_t out_size)
+{
+    if (!name[0] || name[0] == '/' || name[0] == '\\' || strstr(name, ".."))
+        return false;
+    snprintf(out, out_size, "/fs/0/%s", name);
+    return true;
+}
+
+static bool flash_config_read(char *buf, size_t buf_size)
+{
+    handle_t f = filesystem_file_open(ESP_FLASH_CONFIG_PATH, FILE_ACCESS_READ, FILE_MODE_OPEN_EXISTING);
+    if (!f)
+        return false;
+    uint64_t size = filesystem_file_get_size(f);
+    if (size == 0 || size >= buf_size) {
+        filesystem_file_close(f);
+        return false;
+    }
+    int got = filesystem_file_read(f, (uint8_t *)buf, (size_t)size);
+    filesystem_file_close(f);
+    if (got != (int)size)
+        return false;
+    buf[got] = 0;
+    return true;
+}
+
+static void flash_config_disarm(char *json)
+{
+    char *once = find_key(json, "flash_once");
+    if (!once)
+        return;
+    char *end = json_object_end(once);
+    if (!end)
+        return;
+    for (char *p = once; (p = find_key(p, "enabled")) != NULL && p < end; p++) {
+        char *v = strchr(p, ':');
+        if (!v)
+            break;
+        v++;
+        while (*v == ' ' || *v == '\t' || *v == '\r' || *v == '\n')
+            v++;
+        if (*v == '1')
+            *v = '0';
+    }
+
+    handle_t f = filesystem_file_open(ESP_FLASH_CONFIG_PATH, FILE_ACCESS_WRITE, FILE_MODE_CREATE_ALWAYS);
+    if (!f) {
+        LOG("[esp-flash] config disarm open failed");
+        return;
+    }
+    filesystem_file_write(f, (const uint8_t *)json, strlen(json));
+    filesystem_file_close(f);
+    LOG("[esp-flash] config disarmed");
+}
+
+static bool flash_config_parse_esp(char *json, esp_flash_job_t *job)
+{
+    memset(job, 0, sizeof(*job));
+
+    char *once = find_key(json, "flash_once");
+    if (!once || !json_bool_or_int(once, "enabled"))
+        return false;
+
+    char *esp = find_key(once, "esp");
+    if (!esp || !json_bool_or_int(esp, "enabled"))
+        return false;
+
+    job->enabled = true;
+
+    char *stm32 = find_key(esp, "stm32");
+    char *part = find_key(esp, "parts");
+    while (part && job->part_count < (int)(sizeof(job->parts) / sizeof(job->parts[0]))) {
+        part = find_key(part + 1, "file");
+        if (!part)
+            break;
+        if (stm32 && part > stm32)
+            break;
+
+        char rel[80];
+        uint32_t offset = 0;
+        if (!json_string(part, "file", rel, sizeof(rel)) ||
+            !json_u32(part, "offset", &offset) ||
+            !make_fs_path(rel, job->parts[job->part_count].path,
+                          sizeof(job->parts[job->part_count].path))) {
+            LOG("[esp-flash] bad ESP part in config");
+            break;
+        }
+
+        job->parts[job->part_count].offset = offset;
+        job->part_count++;
+        part++;
+    }
+
+    if (job->part_count == 0) {
+        if (file_present(ESP_FLASH_RTOS_BOOT) && file_present(ESP_FLASH_RTOS_IROM)) {
+            strcpy(job->parts[0].path, ESP_FLASH_RTOS_BOOT);
+            job->parts[0].offset = ESP_FLASH_RTOS_BOOT_OFF;
+            strcpy(job->parts[1].path, ESP_FLASH_RTOS_IROM);
+            job->parts[1].offset = ESP_FLASH_RTOS_IROM_OFF;
+            job->part_count = 2;
+            if (file_present(ESP_FLASH_RTOS_INIT) && job->part_count < 4) {
+                strcpy(job->parts[job->part_count].path, ESP_FLASH_RTOS_INIT);
+                job->parts[job->part_count].offset = ESP_FLASH_RTOS_INIT_OFF;
+                job->part_count++;
+            }
+            if (file_present(ESP_FLASH_RTOS_BLANK) && job->part_count < 4) {
+                strcpy(job->parts[job->part_count].path, ESP_FLASH_RTOS_BLANK);
+                job->parts[job->part_count].offset = ESP_FLASH_RTOS_BLANK_OFF;
+                job->part_count++;
+            }
+        } else {
+            strcpy(job->parts[0].path, ESP_FLASH_DEFAULT_IMAGE);
+            job->parts[0].offset = ESP_FLASH_DEFAULT_OFFSET;
+            job->part_count = 1;
+        }
+    }
+
+    return job->enabled && job->part_count > 0;
+}
+
+static bool flash_config_parse_esp_fallback(char *json, esp_flash_job_t *job)
+{
+    memset(job, 0, sizeof(*job));
+    if (!strstr(json, "\"enabled\"") || !strstr(json, ": 1"))
+        return false;
+    if (!file_present(ESP_FLASH_RTOS_BOOT) || !file_present(ESP_FLASH_RTOS_IROM))
+        return false;
+
+    job->enabled = true;
+    strcpy(job->parts[0].path, ESP_FLASH_RTOS_BOOT);
+    job->parts[0].offset = ESP_FLASH_RTOS_BOOT_OFF;
+    strcpy(job->parts[1].path, ESP_FLASH_RTOS_IROM);
+    job->parts[1].offset = ESP_FLASH_RTOS_IROM_OFF;
+    job->part_count = 2;
+    if (file_present(ESP_FLASH_RTOS_INIT)) {
+        strcpy(job->parts[job->part_count].path, ESP_FLASH_RTOS_INIT);
+        job->parts[job->part_count].offset = ESP_FLASH_RTOS_INIT_OFF;
+        job->part_count++;
+    }
+    if (file_present(ESP_FLASH_RTOS_BLANK)) {
+        strcpy(job->parts[job->part_count].path, ESP_FLASH_RTOS_BLANK);
+        job->parts[job->part_count].offset = ESP_FLASH_RTOS_BLANK_OFF;
+        job->part_count++;
+    }
+    LOG("[esp-flash] using fallback RTOS parts");
     return true;
 }
 
 bool esp_flash_run_if_requested(void)
 {
-    if (!esp_flash_marker_present())
+    char json[1536];
+    esp_flash_job_t job;
+    if (!flash_config_read(json, sizeof(json)))
         return false;
-    LOG("[esp-flash] marker found");
-    diag_line(6, "ESP marker: flash_now");
-    bool ok = esp_flash_file(ESP_FLASH_DEFAULT_IMAGE, ESP_FLASH_DEFAULT_OFFSET);
-    if (ok) {
-        const char *paths[] = {
-            "0:/flash_now",
-            "0:flash_now",
-            "/flash_now",
-            "flash_now",
-        };
-        for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
-            FRESULT fr = f_unlink(paths[i]);
-            LOGF("[esp-flash] unlink %s -> %d", paths[i], fr);
-            if (fr == FR_OK)
-                break;
+    if (!flash_config_parse_esp(json, &job) &&
+        !flash_config_parse_esp_fallback(json, &job))
+        return false;
+
+    LOG("[esp-flash] config flash_once ESP job found");
+    diag_line(6, "ESP config job found");
+    flash_config_disarm(json);
+
+    bool ok = true;
+    for (int i = 0; i < job.part_count; i++) {
+        LOGF("[esp-flash] part %d: %s @ 0x%08lx", i,
+             job.parts[i].path, (unsigned long)job.parts[i].offset);
+        diag_printf(7, "ESP part %d/%d", i + 1, job.part_count);
+        if (!esp_flash_file(job.parts[i].path, job.parts[i].offset)) {
+            ok = false;
+            break;
         }
     }
     diag_line(11, ok ? "ESP flash result: OK" : "ESP flash result: FAIL");

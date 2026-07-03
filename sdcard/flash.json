@@ -1,0 +1,13 @@
+{
+  "flash_once": {
+    "enabled": 1,
+    "esp": {
+      "enabled": 1,
+      "parts": [
+        { "file": "esp_boot.bin", "offset": "0x00000" }
+      ]
+    },
+    "stm32": { "enabled": 0, "parts": [] }
+  },
+  "settings": { "wifi_ssid": "Fermiums", "wifi_pass": "876543212" }
+}
