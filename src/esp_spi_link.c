@@ -14,9 +14,13 @@
 
 #define FRAME_MAGIC 0x5053454bu
 #define FRAME_BYTES 32
+#define SPI_WIRE_BYTES 34
 #define DATA_BYTES 20
-/* Bring-up clock. ESP8266 SPISlave is much easier to validate at 1 MHz first;
- * after stable BEGIN/DATA/END logs we can raise this again. */
+#define BAD_DUMP_LIMIT 12
+
+/* ESP8266 Arduino SPISlave drives MISO for SPIMode1 timing. Mode0 produced
+ * valid clocking but garbage frames on this board, so keep bring-up at 1 MHz
+ * and validate magic/offset first. */
 #define ESP_SPI_HZ 1000000.0
 
 enum { FT_IDLE = 0, FT_BEGIN = 1, FT_DATA = 2, FT_END = 3, FT_INFO = 4 };
@@ -34,6 +38,8 @@ static handle_t s_dev;
 static handle_t s_file;
 static uint32_t s_expected, s_written, s_total, s_last_total;
 static uint32_t s_good_frames, s_bad_frames, s_last_good, s_last_bad;
+static uint32_t s_bad_dumps;
+static volatile int s_paused;
 static TickType_t s_last_tick;
 static char s_name[64];
 
@@ -45,27 +51,75 @@ static void close_file(void)
     }
 }
 
+void esp_spi_link_pause(int pause)
+{
+    int new_state = pause ? 1 : 0;
+    if (s_paused == new_state)
+        return;
+    s_paused = new_state;
+    if (s_paused) {
+        close_file();
+        LOG("[wifi-spi] paused");
+        diag_line(12, "WiFi/SPI paused");
+    } else {
+        LOG("[wifi-spi] resumed");
+        diag_line(12, "WiFi/SPI receiver");
+    }
+}
+
 static int safe_name(const char *s)
 {
     return s[0] && s[0] != '/' && s[0] != '\\' && !strstr(s, "..");
 }
 
+static uint32_t rd32le(const uint8_t *p)
+{
+    return ((uint32_t)p[0]) |
+           ((uint32_t)p[1] << 8) |
+           ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+
+static void dump_bad_frame(const uint8_t *rx, int r)
+{
+    if (s_bad_dumps >= BAD_DUMP_LIMIT && (s_bad_frames & 0x3ffu) != 0)
+        return;
+
+    s_bad_dumps++;
+    LOGF("[wifi-spi] bad raw r=%d rx=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x m0=%08lx m1=%08lx m2=%08lx",
+         r,
+         rx[0], rx[1], rx[2], rx[3], rx[4], rx[5], rx[6], rx[7],
+         rx[8], rx[9], rx[10], rx[11],
+         (unsigned long)rd32le(rx + 0),
+         (unsigned long)rd32le(rx + 1),
+         (unsigned long)rd32le(rx + 2));
+}
+
 static int read_frame(kframe_t *fr)
 {
-    uint8_t tx[34] = { 3, 0 };
-    uint8_t rx[34] = { 0 };
+    uint8_t tx[SPI_WIRE_BYTES] = { 3, 0 };
+    uint8_t rx[SPI_WIRE_BYTES] = { 0 };
     int r = spi_dev_transfer_full_duplex(s_dev, tx, sizeof(tx), rx, sizeof(rx));
     if (r < (int)sizeof(rx)) {
         s_bad_frames++;
+        dump_bad_frame(rx, r);
         return 0;
     }
-    memcpy(fr, rx + 2, sizeof(*fr));
-    if (fr->magic != FRAME_MAGIC) {
-        s_bad_frames++;
-        return 0;
+
+    for (int off = 0; off <= 2; off++) {
+        if (rd32le(rx + off) == FRAME_MAGIC) {
+            memcpy(fr, rx + off, sizeof(*fr));
+            s_good_frames++;
+            if (off != 2) {
+                LOGF("[wifi-spi] frame magic offset=%d", off);
+            }
+            return 1;
+        }
     }
-    s_good_frames++;
-    return 1;
+
+    s_bad_frames++;
+    dump_bad_frame(rx, r);
+    return 0;
 }
 
 static void begin_file(const kframe_t *fr)
@@ -139,11 +193,11 @@ static void init_spi(void)
     fpioa_set_function(PIN_ESP_SPI_MISO, FUNC_SPI0_D1);
     handle_t spi = io_open("/dev/spi0");
     configASSERT(spi);
-    s_dev = spi_get_device(spi, SPI_MODE_0, SPI_FF_STANDARD, 1u, 8);
+    s_dev = spi_get_device(spi, SPI_MODE_1, SPI_FF_STANDARD, 1u, 8);
     configASSERT(s_dev);
     spi_dev_set_clock_rate(s_dev, ESP_SPI_HZ);
-    LOG("[wifi-spi] ready hz=1000000");
-    diag_line(3, "WiFi/SPI ready 1MHz");
+    LOG("[wifi-spi] ready hz=1000000 mode=1");
+    diag_line(3, "WiFi/SPI ready 1MHz M1");
 }
 
 void esp_spi_link_run_forever(void)
@@ -152,6 +206,11 @@ void esp_spi_link_run_forever(void)
     init_spi();
     s_last_tick = xTaskGetTickCount();
     for (;;) {
+        if (s_paused) {
+            speed_tick();
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
         kframe_t fr;
         if (read_frame(&fr)) {
             if (fr.type == FT_BEGIN) begin_file(&fr);
