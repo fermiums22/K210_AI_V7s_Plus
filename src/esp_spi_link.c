@@ -15,7 +15,9 @@
 #define FRAME_MAGIC 0x5053454bu
 #define FRAME_BYTES 32
 #define DATA_BYTES 20
-#define ESP_SPI_HZ 10000000.0
+/* Bring-up clock. ESP8266 SPISlave is much easier to validate at 1 MHz first;
+ * after stable BEGIN/DATA/END logs we can raise this again. */
+#define ESP_SPI_HZ 1000000.0
 
 enum { FT_IDLE = 0, FT_BEGIN = 1, FT_DATA = 2, FT_END = 3, FT_INFO = 4 };
 
@@ -31,6 +33,7 @@ typedef struct {
 static handle_t s_dev;
 static handle_t s_file;
 static uint32_t s_expected, s_written, s_total, s_last_total;
+static uint32_t s_good_frames, s_bad_frames, s_last_good, s_last_bad;
 static TickType_t s_last_tick;
 static char s_name[64];
 
@@ -52,10 +55,17 @@ static int read_frame(kframe_t *fr)
     uint8_t tx[34] = { 3, 0 };
     uint8_t rx[34] = { 0 };
     int r = spi_dev_transfer_full_duplex(s_dev, tx, sizeof(tx), rx, sizeof(rx));
-    if (r < (int)sizeof(rx))
+    if (r < (int)sizeof(rx)) {
+        s_bad_frames++;
         return 0;
+    }
     memcpy(fr, rx + 2, sizeof(*fr));
-    return fr->magic == FRAME_MAGIC;
+    if (fr->magic != FRAME_MAGIC) {
+        s_bad_frames++;
+        return 0;
+    }
+    s_good_frames++;
+    return 1;
 }
 
 static void begin_file(const kframe_t *fr)
@@ -64,8 +74,10 @@ static void begin_file(const kframe_t *fr)
     uint8_t n = fr->len < DATA_BYTES ? fr->len : DATA_BYTES;
     memcpy(s_name, fr->data, n);
     s_name[n] = 0;
-    if (!safe_name(s_name))
+    if (!safe_name(s_name)) {
+        LOGF("[wifi-spi] bad file name: %s", s_name);
         return;
+    }
     char path[96];
     snprintf(path, sizeof(path), "/fs/0/%s", s_name);
     s_file = filesystem_file_open(path, FILE_ACCESS_WRITE, FILE_MODE_CREATE_ALWAYS);
@@ -74,6 +86,8 @@ static void begin_file(const kframe_t *fr)
     LOGF("[wifi-spi] BEGIN %s %lu", s_name, (unsigned long)s_expected);
     diag_printf(4, "WiFi %.20s", s_name);
     diag_printf(5, "%lu bytes", (unsigned long)s_expected);
+    if (!s_file)
+        LOGF("[wifi-spi] open failed: %s", path);
 }
 
 static void data_file(const kframe_t *fr)
@@ -100,15 +114,20 @@ static void speed_tick(void)
     if (dt < pdMS_TO_TICKS(1000))
         return;
     uint32_t d = s_total - s_last_total;
+    uint32_t dg = s_good_frames - s_last_good;
+    uint32_t db = s_bad_frames - s_last_bad;
     uint32_t kbps = d * 1000u / 1024u / (dt * portTICK_PERIOD_MS);
-    if (kbps || s_file) {
-        LOGF("[wifi-spi] %lu kB/s total=%lu file=%lu/%lu",
+    if (kbps || s_file || dg || db) {
+        LOGF("[wifi-spi] %lu kB/s total=%lu file=%lu/%lu frames ok=%lu bad=%lu",
              (unsigned long)kbps, (unsigned long)s_total,
-             (unsigned long)s_written, (unsigned long)s_expected);
+             (unsigned long)s_written, (unsigned long)s_expected,
+             (unsigned long)dg, (unsigned long)db);
         diag_printf(7, "%lu kB/s", (unsigned long)kbps);
         diag_printf(8, "%lu/%lu", (unsigned long)s_written, (unsigned long)s_expected);
     }
     s_last_total = s_total;
+    s_last_good = s_good_frames;
+    s_last_bad = s_bad_frames;
     s_last_tick = now;
 }
 
@@ -123,8 +142,8 @@ static void init_spi(void)
     s_dev = spi_get_device(spi, SPI_MODE_0, SPI_FF_STANDARD, 1u, 8);
     configASSERT(s_dev);
     spi_dev_set_clock_rate(s_dev, ESP_SPI_HZ);
-    LOG("[wifi-spi] ready");
-    diag_line(3, "WiFi/SPI ready");
+    LOG("[wifi-spi] ready hz=1000000");
+    diag_line(3, "WiFi/SPI ready 1MHz");
 }
 
 void esp_spi_link_run_forever(void)
