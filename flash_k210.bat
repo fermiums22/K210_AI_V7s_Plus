@@ -5,12 +5,32 @@ cd /d "%~dp0"
 set "PORT=%~1"
 if "%PORT%"=="" set "PORT=COM12"
 set "NO_BUILD=0"
-if /I "%~2"=="--no-build" set "NO_BUILD=1"
+set "KFLASH_BAUD=1500000"
+shift /1
+
+:parse_args
+if "%~1"=="" goto args_done
+if /I "%~1"=="--no-build" (
+  set "NO_BUILD=1"
+  shift /1
+  goto parse_args
+)
+if /I "%~1"=="--baud" (
+  set "KFLASH_BAUD=%~2"
+  shift /1
+  shift /1
+  goto parse_args
+)
+echo ERROR: unknown argument: %~1
+exit /b 2
+:args_done
+
 set "BIN=%CD%\build\robot_show.bin"
 
 echo === K210 flash ===
 echo Repo: %CD%
 echo Port: %PORT%
+echo Baud: %KFLASH_BAUD%
 echo.
 
 rem Enable ANSI/VT escape handling in the current Windows console so kflash
@@ -55,8 +75,8 @@ if errorlevel 1 (
 echo.
 echo [kflash] using DTR/RTS auto-reset/boot on %PORT% (-B dan).
 echo [kflash] Do not hold BOOT/RESET manually unless auto-boot fails.
-echo [kflash] flashing %BIN% to %PORT% ...
-py -3 -m kflash -p %PORT% -b 1500000 -B dan "%BIN%"
+echo [kflash] flashing %BIN% to %PORT% at %KFLASH_BAUD% ...
+py -3 -m kflash -p %PORT% -b %KFLASH_BAUD% -B dan "%BIN%"
 if errorlevel 1 (
   echo ERROR: kflash failed
   echo If this is a sync/timeout error, check the COM port and try again.
