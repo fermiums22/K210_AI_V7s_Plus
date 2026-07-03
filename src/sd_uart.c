@@ -1,4 +1,5 @@
 #include "sd_uart.h"
+#include "sd.h"
 #include "log.h"
 #include "diag_screen.h"
 #include "esp_flasher.h"
@@ -17,7 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Keep the host sync word independent from CR/LF handling.  The PC helper sends
+/* Keep the host sync word independent from CR/LF handling. The PC helper sends
  * KSD1\n, but accepting KSD1 first makes the persistent command service robust
  * even if the newline is delayed, stripped, or consumed by a previous drain. */
 #define UART_SD_MAGIC "KSD1"
@@ -52,9 +53,6 @@ static int deadline_expired(TickType_t start, uint32_t timeout_ms)
 
 static int uarths_try_read_byte(uint8_t *out)
 {
-    /* UARTHS rxdata is SiFive-style: bit31 is EMPTY, bits[7:0] are DATA.
-     * Use a raw register read instead of the SDK bitfield type so RX polling is
-     * not dependent on compiler bitfield layout. */
     uint32_t raw = *(volatile uint32_t *)&REG_UARTHS->rxdata;
     if (raw & UARTHS_RXDATA_EMPTY_MASK)
         return 0;
@@ -98,10 +96,6 @@ static int read_byte_timeout(uint8_t *out, uint32_t timeout_ms)
     while (!deadline_expired(start, timeout_ms)) {
         if (uarths_try_read_byte(out))
             return 1;
-
-        /* Do not sleep for a whole RTOS tick between UART bytes. At 115200 baud
-         * the next byte can arrive ~87 us later; vTaskDelay(1) here can overflow
-         * the tiny UARTHS RX FIFO during raw PUT. Keep polling and only yield. */
         uart_rx_yield_if_idle(&empty_spins);
     }
     return 0;
@@ -392,6 +386,25 @@ static void run_spi_command(void)
     host_puts("KSD:RUNSPI\n");
 }
 
+static void format_sd_command(void)
+{
+    host_puts("KSD:FORMATTING\n");
+    LOG("[sd-uart] host requested FORMAT_SD");
+    diag_line(6, "UART FORMAT_SD requested");
+
+    esp_spi_link_pause(1);
+    bool ok = sd_format();
+    esp_spi_link_pause(0);
+
+    if (ok) {
+        diag_line(6, "FORMAT_SD OK");
+        host_puts("KSD:FORMAT_OK\n");
+    } else {
+        diag_line(6, "FORMAT_SD FAIL");
+        host_puts("KSD:FORMAT_FAIL\n");
+    }
+}
+
 static bool command_loop(void)
 {
     for (;;) {
@@ -407,6 +420,11 @@ static bool command_loop(void)
             LOG("[sd-uart] command session done");
             diag_line(3, "UART command: done");
             return true;
+        }
+
+        if (strcmp(line, "FORMAT_SD") == 0) {
+            format_sd_command();
+            continue;
         }
 
         if (strcmp(line, "RUN_SPI") == 0) {
@@ -457,7 +475,6 @@ bool sd_uart_receive_window(uint32_t window_ms)
         return false;
     }
 
-    /* Clear a possible trailing CR/LF from the sync word before command mode. */
     drain_rx(20);
 
     host_puts("KSD:HELLO\n");
