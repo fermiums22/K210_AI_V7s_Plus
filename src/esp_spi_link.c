@@ -3,6 +3,7 @@
 #include "log.h"
 #include "diag_screen.h"
 #include "amp.h"
+#include "esp_uart_log.h"
 
 #include <FreeRTOS.h>
 #include <task.h>
@@ -196,8 +197,8 @@ static void init_spi(void)
     s_dev = spi_get_device(spi, SPI_MODE_1, SPI_FF_STANDARD, 1u, 8);
     configASSERT(s_dev);
     spi_dev_set_clock_rate(s_dev, ESP_SPI_HZ);
-    LOG("[wifi-spi] ready hz=1000000 mode=1");
-    diag_line(3, "WiFi/SPI ready 1MHz M1");
+    LOG("[wifi-spi] ready hz=1000000 mode=1 waiting-for-esp-ready");
+    diag_line(3, "WiFi/SPI wait ESP");
 }
 
 void esp_spi_link_run_forever(void)
@@ -205,11 +206,21 @@ void esp_spi_link_run_forever(void)
     amp_set(false);
     init_spi();
     s_last_tick = xTaskGetTickCount();
+    int announced_ready = 0;
     for (;;) {
         if (s_paused) {
             speed_tick();
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
+        }
+        if (!esp_uart_log_spi_ready()) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        if (!announced_ready) {
+            announced_ready = 1;
+            LOG("[wifi-spi] ESP SPI ready, polling frames");
+            diag_line(3, "WiFi/SPI polling");
         }
         kframe_t fr;
         if (read_frame(&fr)) {
