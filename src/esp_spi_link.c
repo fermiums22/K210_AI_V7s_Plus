@@ -32,6 +32,7 @@
 #define MODE_COUNT 4
 #define PROBE_FRAMES_PER_MODE 256u
 #define SPI_TEST_HZ 200000.0
+#define SPI_ZERO_VERDICT_BAD_MIN 4096u
 
 enum { FT_INFO = 4 };
 
@@ -57,6 +58,7 @@ static uint32_t s_last_total_good;
 static uint32_t s_last_total_bad;
 static uint32_t s_first_good_logged;
 static uint32_t s_bad_dump_count;
+static uint32_t s_result_logged;
 static volatile int s_paused;
 static TickType_t s_last_tick;
 
@@ -148,6 +150,24 @@ static void switch_mode(void)
     diag_printf(3, "SPI test mode %d", s_mode);
 }
 
+static void check_final_verdict(void)
+{
+    if (s_result_logged)
+        return;
+    if (s_total_good != 0 || s_total_bad < SPI_ZERO_VERDICT_BAD_MIN)
+        return;
+
+    uint32_t zero_sum = s_zero[0] + s_zero[1] + s_zero[2] + s_zero[3];
+    uint32_t invalid_sum = s_invalid[0] + s_invalid[1] + s_invalid[2] + s_invalid[3];
+    if (zero_sum >= s_total_bad && invalid_sum == 0) {
+        s_result_logged = 1;
+        LOG("[spi-test] RESULT: SPI_FAIL_ALL_ZERO");
+        LOG("[spi-test] K210 clocks SPI but MISO reads only zeros in modes 0..3");
+        LOG("[spi-test] Check ESP MISO -> K210 MISO pin, FPIOA mapping, and D0/D1 direction");
+        diag_line(4, "SPI FAIL: all zero");
+    }
+}
+
 static void stats_tick(void)
 {
     TickType_t now = xTaskGetTickCount();
@@ -174,6 +194,7 @@ static void stats_tick(void)
          (unsigned long)s_invalid[0], (unsigned long)s_invalid[1],
          (unsigned long)s_invalid[2], (unsigned long)s_invalid[3]);
     diag_printf(4, "good %lu bad %lu", (unsigned long)s_total_good, (unsigned long)s_total_bad);
+    check_final_verdict();
 }
 
 static void init_spi(void)
@@ -211,6 +232,10 @@ void esp_spi_link_run_forever(void)
     LOG("[spi-test] ESP SPI-ready marker detected, start mode sweep");
 
     for (;;) {
+        if (s_result_logged) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+            continue;
+        }
         if (s_paused) {
             stats_tick();
             vTaskDelay(pdMS_TO_TICKS(10));
