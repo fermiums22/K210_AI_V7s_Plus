@@ -45,6 +45,13 @@ int main(void)
         LOGF("[main] sd ok, root entries=%d", n);
         diag_printf(3, "SD OK, root entries=%d", n);
         amp_set(false);
+
+        /* UART SD service window for the PC helper script.
+         * Host can GET current flash.json, PUT payload files, PUT patched
+         * flash.json, then command RESET. If no host is present, boot proceeds
+         * normally after a short window. */
+        sd_uart_receive_window(5000);
+
         esp_flash_run_if_requested();
     } else {
         LOG("[main] sd failed");
