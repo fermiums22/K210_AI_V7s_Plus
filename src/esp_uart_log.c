@@ -27,6 +27,11 @@ static void gpio_set(int n, int v)
     else REG_GPIO->data_output.u32[0] &= ~(1u << n);
 }
 
+int esp_uart_log_is_started(void)
+{
+    return s_started;
+}
+
 int esp_uart_log_spi_ready(void)
 {
     return s_spi_ready;
@@ -113,7 +118,7 @@ void esp_uart_log_stop(void)
     if (!s_started)
         return;
 
-    LOG("[esp-uart] bridge pause for ESP flash");
+    LOG("[esp-uart] bridge pause");
     s_running = 0;
     for (int i = 0; i < 100 && s_started; i++)
         vTaskDelay(pdMS_TO_TICKS(10));
