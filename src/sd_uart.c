@@ -18,9 +18,10 @@
  * KSD1\n, but accepting KSD1 first makes the boot-window handshake robust even if
  * the newline is delayed, stripped, or consumed by a previous drain. */
 #define UART_SD_MAGIC "KSD1"
-#define UART_SD_BUF   512
+#define UART_SD_BUF   128
 #define UARTHS_RXDATA_EMPTY_MASK (1u << 31)
 #define UART_SD_CMD_TIMEOUT_MS 2000u
+#define UART_SD_DATA_TIMEOUT_MS 15000u
 #define UART_SD_EMPTY_SPINS_BEFORE_YIELD 2048u
 
 static volatile uarths_t *const REG_UARTHS = (volatile uarths_t *)UARTHS_BASE_ADDR;
@@ -238,9 +239,6 @@ static bool receive_file(const char *rel_path, uint32_t size)
         return false;
     }
 
-    /* KSD:GO only means that PUT was accepted and the file is open.
-     * KSD:READYDATA is the real data-mode edge: after this line returns to the
-     * host, this task is already prepared to read the first raw binary byte. */
     host_puts("KSD:GO\n");
     host_puts("KSD:READYDATA\n");
 
@@ -251,11 +249,11 @@ static bool receive_file(const char *rel_path, uint32_t size)
             chunk = sizeof(rx_buf);
 
         for (uint32_t i = 0; i < chunk; i++) {
-            if (!read_byte_timeout(&rx_buf[i], 5000)) {
+            if (!read_byte_timeout(&rx_buf[i], UART_SD_DATA_TIMEOUT_MS)) {
                 filesystem_file_close(f);
-                LOGF("[sd-uart] short file: %s %lu/%lu",
-                     rel_path, (unsigned long)got, (unsigned long)size);
-                diag_printf(5, "UART short %lu/%lu", (unsigned long)got, (unsigned long)size);
+                LOGF("[sd-uart] short file: %s %lu+%lu/%lu",
+                     rel_path, (unsigned long)got, (unsigned long)i, (unsigned long)size);
+                diag_printf(5, "UART short %lu/%lu", (unsigned long)(got + i), (unsigned long)size);
                 host_puts("KSD:ERR short\n");
                 return false;
             }
