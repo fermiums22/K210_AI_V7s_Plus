@@ -3,6 +3,7 @@
 #include "diag_screen.h"
 #include "esp_flasher.h"
 #include "esp_spi_link.h"
+#include "esp_uart_log.h"
 
 #include <FreeRTOS.h>
 #include <task.h>
@@ -17,8 +18,8 @@
 #include <string.h>
 
 /* Keep the host sync word independent from CR/LF handling.  The PC helper sends
- * KSD1\n, but accepting KSD1 first makes the boot-window handshake robust even if
- * the newline is delayed, stripped, or consumed by a previous drain. */
+ * KSD1\n, but accepting KSD1 first makes the persistent command service robust
+ * even if the newline is delayed, stripped, or consumed by a previous drain. */
 #define UART_SD_MAGIC "KSD1"
 #define UART_SD_BUF   512
 #define UARTHS_RXDATA_EMPTY_MASK (1u << 31)
@@ -285,7 +286,7 @@ static bool receive_file(const char *rel_path, uint32_t size)
     return true;
 }
 
-static bool send_file(const char *rel_path)
+static bool send_file_raw(const char *rel_path)
 {
     char path[160];
     if (!make_fs_path(rel_path, path, sizeof(path), NULL, 0)) {
@@ -334,6 +335,23 @@ static bool send_file(const char *rel_path)
     return true;
 }
 
+static bool send_file_quiet(const char *rel_path)
+{
+    int restart_uart = esp_uart_log_is_started();
+    esp_spi_link_pause(1);
+    if (restart_uart) {
+        esp_uart_log_stop();
+        vTaskDelay(ms_to_ticks_min(150));
+    }
+
+    bool ok = send_file_raw(rel_path);
+
+    if (restart_uart)
+        esp_uart_log_start();
+    esp_spi_link_pause(0);
+    return ok;
+}
+
 static void board_reset(void)
 {
     LOG("[sd-uart] host requested SOC reset");
@@ -350,11 +368,28 @@ static bool run_esp_flash_command(void)
     host_puts("KSD:FLASHING\n");
     LOG("[sd-uart] host requested ESP flash");
     diag_line(6, "UART ESP flash requested");
+
     esp_spi_link_pause(1);
+    esp_uart_log_stop();
+    vTaskDelay(ms_to_ticks_min(150));
+
     bool ok = esp_flash_run_if_requested();
+
+    if (ok)
+        esp_uart_log_start();
     esp_spi_link_pause(0);
+
     host_puts(ok ? "KSD:FLASH_OK\n" : "KSD:FLASH_FAIL\n");
     return ok;
+}
+
+static void run_spi_command(void)
+{
+    LOG("[sd-uart] host requested ESP UART/SPI run");
+    diag_line(6, "UART RUN_SPI requested");
+    esp_uart_log_start();
+    esp_spi_link_start();
+    host_puts("KSD:RUNSPI\n");
 }
 
 static bool command_loop(void)
@@ -367,11 +402,16 @@ static bool command_loop(void)
             return false;
         }
 
-        if (strcmp(line, "DONE") == 0 || strcmp(line, "RUN_SPI") == 0) {
-            host_puts(strcmp(line, "RUN_SPI") == 0 ? "KSD:RUNSPI\n" : "KSD:DONE\n");
-            LOG("[sd-uart] upload/session done");
-            diag_line(3, "UART upload: done");
+        if (strcmp(line, "DONE") == 0) {
+            host_puts("KSD:DONE\n");
+            LOG("[sd-uart] command session done");
+            diag_line(3, "UART command: done");
             return true;
+        }
+
+        if (strcmp(line, "RUN_SPI") == 0) {
+            run_spi_command();
+            continue;
         }
 
         if (strcmp(line, "RESET") == 0) {
@@ -386,7 +426,7 @@ static bool command_loop(void)
         char rel_path[128];
         unsigned long size = 0;
         if (sscanf(line, "GET %127s", rel_path) == 1) {
-            if (!send_file(rel_path))
+            if (!send_file_quiet(rel_path))
                 return false;
             continue;
         }
