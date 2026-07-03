@@ -31,6 +31,7 @@
 #define CAM_H        240
 
 static handle_t s_dvp, s_sccb;
+static handle_t s_gc;
 static uint32_t s_fb[CAM_W * CAM_H / 2] __attribute__((aligned(64)));  /* RGB565 display */
 static uint32_t s_snap[CAM_W * CAM_H / 2] __attribute__((aligned(64)));/* stable RGB565 snapshot */
 static uint8_t  s_ai[CAM_W * CAM_H * 3] __attribute__((aligned(64)));  /* RGB24 planar (AI) */
@@ -62,6 +63,20 @@ static void on_frame(dvp_frame_event_t event, void *userdata)
         s_frame_done = 1;
 }
 
+static void cam_log_stream_regs(const char *tag)
+{
+    if (!s_gc)
+        return;
+
+    sccb_dev_write_byte(s_gc, 0xfe, 0x00);
+    uint8_t id = sccb_dev_read_byte(s_gc, 0xF0);
+    uint8_t f1 = sccb_dev_read_byte(s_gc, 0xF1);
+    uint8_t f2 = sccb_dev_read_byte(s_gc, 0xF2);
+    uint8_t r4f = sccb_dev_read_byte(s_gc, 0x4F);
+    uint8_t r50 = sccb_dev_read_byte(s_gc, 0x50);
+    printf("[cam] %s regs id=%02x f1=%02x f2=%02x 4f=%02x 50=%02x\n", tag, id, f1, f2, r4f, r50);
+}
+
 int cam_start(char *name_out, int len)
 {
     if (s_started) {
@@ -89,7 +104,7 @@ int cam_start(char *name_out, int len)
     dvp_set_signal(s_dvp, DVP_SIG_POWER_DOWN, false);
     usleep(20 * 1000);
 
-    handle_t gc = sccb_get_device(s_sccb, GC0328_ADDR, 8);
+    s_gc = sccb_get_device(s_sccb, GC0328_ADDR, 8);
 
     /* The GC0328 start-up is flaky after an ISP soft-reboot (not a real power
      * cycle): id can read 0xFF (no comms) or 0x00 (still in reset). Re-pulse
@@ -101,7 +116,7 @@ int cam_start(char *name_out, int len)
         dvp_set_signal(s_dvp, DVP_SIG_RESET, true);
         usleep(150 * 1000);
         for (int i = 0; i < 12; i++) {
-            id = sccb_dev_read_byte(gc, 0xF0);
+            id = sccb_dev_read_byte(s_gc, 0xF0);
             if (id == 0x9d || id == 0x9b)
                 break;
             usleep(30 * 1000);
@@ -118,20 +133,21 @@ int cam_start(char *name_out, int len)
     /* Full vendor register init, then QVGA 320x240 windowing. The default
      * table ends with output-enable (0xf1=0x07, 0xf2=0x01); 0xff in the reg
      * column means "delay N ms". */
-    sccb_dev_write_byte(gc, 0xfe, 0x00);
-    printf("[cam] page0 id readback=0x%02x\n", sccb_dev_read_byte(gc, 0xF0));
+    sccb_dev_write_byte(s_gc, 0xfe, 0x00);
+    printf("[cam] page0 id readback=0x%02x\n", sccb_dev_read_byte(s_gc, 0xF0));
     for (int i = 0; sensor_default_regs[i][0]; i++) {
         if (sensor_default_regs[i][0] == 0xff) {
             usleep(sensor_default_regs[i][1] * 1000);
             continue;
         }
-        sccb_dev_write_byte(gc, sensor_default_regs[i][0], sensor_default_regs[i][1]);
+        sccb_dev_write_byte(s_gc, sensor_default_regs[i][0], sensor_default_regs[i][1]);
         usleep(1000);
     }
     for (int i = 0; qvga_config[i][0]; i++) {
-        sccb_dev_write_byte(gc, qvga_config[i][0], qvga_config[i][1]);
+        sccb_dev_write_byte(s_gc, qvga_config[i][0], qvga_config[i][1]);
         usleep(1000);
     }
+    cam_log_stream_regs("after-init");
 
     /* Configure both outputs like the working demo: 0=AI RGB24 planar,
      * 1=display RGB565. The DMA pipeline may not run with display alone. */
@@ -153,17 +169,46 @@ int cam_start(char *name_out, int len)
     return id;
 }
 
-/* Wait for the next finished frame in s_fb (continuous/auto capture is already
- * running from cam_start). Returns 1 if a frame completed, 0 on timeout. */
-static int cam_grab(void)
+static int cam_grab_once(int timeout_ms)
 {
     if (!s_started || !s_dvp)
         return 0;
+
+    volatile dvp_t *dvp = (volatile dvp_t *)DVP_BASE_ADDR;
     s_frame_done = 0;
-    int t = 0;
-    while (!s_frame_done && t++ < 300)
+
+    /* Do not rely only on the PLIC callback. Poll the DVP finish bit as well:
+     * if IRQ routing is late/noisy we still detect a completed frame. */
+    dvp->sts |= DVP_STS_FRAME_FINISH | DVP_STS_FRAME_FINISH_WE;
+    dvp_enable_frame(s_dvp);
+
+    for (int t = 0; t < timeout_ms; t++) {
+        if (s_frame_done)
+            return 1;
+        if (dvp->sts & DVP_STS_FRAME_FINISH) {
+            dvp->sts |= DVP_STS_FRAME_FINISH | DVP_STS_FRAME_FINISH_WE;
+            return 1;
+        }
         vTaskDelay(pdMS_TO_TICKS(1));
-    return s_frame_done;
+    }
+
+    printf("[cam] frame timeout sts=0x%08lx cfg=0x%08lx cmos=0x%08lx\n",
+           (unsigned long)dvp->sts,
+           (unsigned long)dvp->dvp_cfg,
+           (unsigned long)dvp->cmos_cfg);
+    return 0;
+}
+
+/* Wait for the next finished frame in s_fb. Returns 1 if a frame completed. */
+static int cam_grab(void)
+{
+    for (int i = 0; i < 5; i++) {
+        if (cam_grab_once(250))
+            return 1;
+        cam_log_stream_regs("grab-timeout");
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    return 0;
 }
 
 int cam_capture_rgb565(const uint16_t **pixels, int *w, int *h)
@@ -175,11 +220,16 @@ int cam_capture_rgb565(const uint16_t **pixels, int *w, int *h)
     }
 
     int ok = cam_grab();
+    if (!ok) {
+        printf("[cam] capture failed: no DVP frame\n");
+        return 0;
+    }
+
     memcpy(s_snap, s_fb, sizeof(s_snap));
     *pixels = (const uint16_t *)s_snap;
     *w = CAM_W;
     *h = CAM_H;
-    return ok;
+    return 1;
 }
 
 void cam_preview_forever(void)
