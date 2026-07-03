@@ -21,7 +21,9 @@
 #include <esp_loader_io.h>
 
 #define ESP_FLASH_BAUD       115200u
-#define ESP_FLASH_BLOCK      256u
+#define ESP_FLASH_BLOCK      1024u
+
+#define ESP_FLASH_MAX_IMAGE  0x200000u
 
 typedef struct {
     esp_loader_port_t port;
@@ -230,20 +232,55 @@ static const char *target_name(target_chip_t chip)
     }
 }
 
-bool esp_flash_file(const char *path, uint32_t offset)
+static bool esp_flash_open_loader(esp_loader_t *loader)
 {
-    if (!path)
-        return false;
+    memset(&s_port, 0, sizeof(s_port));
+    s_port.port.ops = &k210_esp_ops;
 
-    handle_t f = filesystem_file_open(path, FILE_ACCESS_READ, FILE_MODE_OPEN_EXISTING);
+    esp_loader_error_t err = esp_loader_init_serial(loader, &s_port.port);
+    if (err != ESP_LOADER_SUCCESS) {
+        LOGF("[esp-flash] init failed: %d", err);
+        diag_printf(8, "ESP init failed %d", err);
+        return false;
+    }
+
+    esp_loader_connect_args_t args = ESP_LOADER_CONNECT_DEFAULT();
+    args.sync_timeout = 250;
+    args.trials = 12;
+    err = esp_loader_connect_with_stub(loader, &args);
+    if (err != ESP_LOADER_SUCCESS) {
+        LOGF("[esp-flash] stub connect failed: %d, trying ROM", err);
+        diag_printf(8, "Stub fail %d, ROM", err);
+        err = esp_loader_connect(loader, &args);
+    }
+    if (err != ESP_LOADER_SUCCESS) {
+        LOGF("[esp-flash] connect failed: %d", err);
+        diag_printf(8, "ESP connect failed %d", err);
+        esp_reset_normal_boot();
+        esp_loader_deinit(loader);
+        return false;
+    }
+
+    target_chip_t chip = esp_loader_get_target(loader);
+    LOGF("[esp-flash] connected target=%s", target_name(chip));
+    LOGF("[esp-flash] session baud=%lu block=%lu", (unsigned long)ESP_FLASH_BAUD,
+         (unsigned long)sizeof(s_flash_buf));
+    diag_printf(8, "ESP target: %s", target_name(chip));
+    return true;
+}
+
+static bool esp_flash_part_with_loader(esp_loader_t *loader, const flash_part_t *part,
+                                       int part_index, int part_count)
+{
+    handle_t f = filesystem_file_open(part->path, FILE_ACCESS_READ, FILE_MODE_OPEN_EXISTING);
     if (!f) {
-        LOGF("[esp-flash] image missing: %s", path);
+        LOGF("[esp-flash] image missing: %s", part->path);
         diag_line(7, "ESP image missing");
         return false;
     }
 
     uint64_t file_size64 = filesystem_file_get_size(f);
-    if (file_size64 == 0 || file_size64 > 0x200000u) {
+    if (file_size64 == 0 || file_size64 > ESP_FLASH_MAX_IMAGE) {
         LOGF("[esp-flash] bad image size: %lu", (unsigned long)file_size64);
         diag_printf(7, "ESP bad size: %lu", (unsigned long)file_size64);
         filesystem_file_close(f);
@@ -252,58 +289,24 @@ bool esp_flash_file(const char *path, uint32_t offset)
 
     uint32_t file_size = (uint32_t)file_size64;
     uint32_t image_size = (file_size + 3u) & ~3u;
-    LOGF("[esp-flash] flashing %s size=%lu offset=0x%08lx",
-         path, (unsigned long)file_size, (unsigned long)offset);
-    diag_line(6, "ESP flash: start");
-    diag_printf(7, "Image %lu bytes", (unsigned long)file_size);
-
-    memset(&s_port, 0, sizeof(s_port));
-    s_port.port.ops = &k210_esp_ops;
-
-    esp_loader_t loader;
-    esp_loader_error_t err = esp_loader_init_serial(&loader, &s_port.port);
-    if (err != ESP_LOADER_SUCCESS) {
-        LOGF("[esp-flash] init failed: %d", err);
-        diag_printf(8, "ESP init failed %d", err);
-        filesystem_file_close(f);
-        return false;
-    }
-
-    esp_loader_connect_args_t args = ESP_LOADER_CONNECT_DEFAULT();
-    args.sync_timeout = 250;
-    args.trials = 12;
-    err = esp_loader_connect_with_stub(&loader, &args);
-    if (err != ESP_LOADER_SUCCESS) {
-        LOGF("[esp-flash] stub connect failed: %d, trying ROM", err);
-        diag_printf(8, "Stub fail %d, ROM", err);
-        err = esp_loader_connect(&loader, &args);
-    }
-    if (err != ESP_LOADER_SUCCESS) {
-        LOGF("[esp-flash] connect failed: %d", err);
-        diag_printf(8, "ESP connect failed %d", err);
-        esp_reset_normal_boot();
-        esp_loader_deinit(&loader);
-        filesystem_file_close(f);
-        return false;
-    }
-
-    target_chip_t chip = esp_loader_get_target(&loader);
-    LOGF("[esp-flash] connected target=%s", target_name(chip));
-    diag_printf(8, "ESP target: %s", target_name(chip));
+    LOGF("[esp-flash] part %d/%d: %s size=%lu offset=0x%08lx",
+         part_index + 1, part_count, part->path,
+         (unsigned long)file_size, (unsigned long)part->offset);
+    diag_printf(7, "ESP part %d/%d", part_index + 1, part_count);
+    diag_printf(8, "Image %lu bytes", (unsigned long)file_size);
 
     esp_loader_flash_cfg_t cfg = {
-        .offset = offset,
+        .offset = part->offset,
         .image_size = image_size,
         .block_size = sizeof(s_flash_buf),
         .skip_verify = false,
     };
 
-    err = esp_loader_flash_start(&loader, &cfg);
+    esp_loader_error_t err = esp_loader_flash_start(loader, &cfg);
     if (err != ESP_LOADER_SUCCESS) {
-        LOGF("[esp-flash] flash_start failed: %d", err);
+        LOGF("[esp-flash] flash_start failed at part %d/%d: %d",
+             part_index + 1, part_count, err);
         diag_printf(9, "Erase/start failed %d", err);
-        esp_reset_normal_boot();
-        esp_loader_deinit(&loader);
         filesystem_file_close(f);
         return false;
     }
@@ -321,21 +324,19 @@ bool esp_flash_file(const char *path, uint32_t offset)
                 want = chunk;
             int got = filesystem_file_read(f, s_flash_buf, want);
             if (got != (int)want) {
-                LOGF("[esp-flash] read failed at %lu", (unsigned long)sent);
+                LOGF("[esp-flash] read failed at part %d/%d offset %lu",
+                     part_index + 1, part_count, (unsigned long)sent);
                 diag_printf(9, "Read fail at %lu", (unsigned long)sent);
-                esp_reset_normal_boot();
-                esp_loader_deinit(&loader);
                 filesystem_file_close(f);
                 return false;
             }
         }
 
-        err = esp_loader_flash_write(&loader, &cfg, s_flash_buf, chunk);
+        err = esp_loader_flash_write(loader, &cfg, s_flash_buf, chunk);
         if (err != ESP_LOADER_SUCCESS) {
-            LOGF("[esp-flash] write failed at %lu: %d", (unsigned long)sent, err);
+            LOGF("[esp-flash] write failed at part %d/%d offset %lu: %d",
+                 part_index + 1, part_count, (unsigned long)sent, err);
             diag_printf(9, "Write fail %lu e%d", (unsigned long)sent, err);
-            esp_reset_normal_boot();
-            esp_loader_deinit(&loader);
             filesystem_file_close(f);
             return false;
         }
@@ -343,28 +344,72 @@ bool esp_flash_file(const char *path, uint32_t offset)
         sent += chunk;
         if ((sent % (32u * 1024u)) == 0 || sent == image_size) {
             uint32_t pct = (sent * 100u) / image_size;
-            LOGF("[esp-flash] progress %lu/%lu (%lu%%)",
+            LOGF("[esp-flash] part %d/%d progress %lu/%lu (%lu%%)",
+                 part_index + 1, part_count,
                  (unsigned long)sent, (unsigned long)image_size, (unsigned long)pct);
-            diag_printf(9, "ESP write %lu/%lu %lu%%",
-                        (unsigned long)sent, (unsigned long)image_size, (unsigned long)pct);
+            diag_printf(9, "ESP %d/%d %lu%%", part_index + 1, part_count,
+                        (unsigned long)pct);
         }
     }
 
-    err = esp_loader_flash_finish(&loader, &cfg);
-    esp_loader_deinit(&loader);
+    err = esp_loader_flash_finish(loader, &cfg);
     filesystem_file_close(f);
 
     if (err != ESP_LOADER_SUCCESS) {
-        LOGF("[esp-flash] finish failed: %d", err);
+        LOGF("[esp-flash] finish failed at part %d/%d: %d", part_index + 1, part_count, err);
         diag_printf(10, "ESP finish failed %d", err);
-        esp_reset_normal_boot();
         return false;
     }
 
-    LOG("[esp-flash] done, resetting ESP to normal boot");
-    diag_line(10, "ESP flash: done");
-    esp_reset_normal_boot();
+    LOGF("[esp-flash] part %d/%d done", part_index + 1, part_count);
     return true;
+}
+
+static bool esp_flash_job_run(const esp_flash_job_t *job)
+{
+    if (!job || job->part_count <= 0)
+        return false;
+
+    LOGF("[esp-flash] job start parts=%d", job->part_count);
+    diag_line(6, "ESP flash: start");
+
+    esp_loader_t loader;
+    if (!esp_flash_open_loader(&loader))
+        return false;
+
+    bool ok = true;
+    for (int i = 0; i < job->part_count; i++) {
+        if (!esp_flash_part_with_loader(&loader, &job->parts[i], i, job->part_count)) {
+            ok = false;
+            break;
+        }
+    }
+
+    esp_loader_deinit(&loader);
+    if (ok) {
+        LOG("[esp-flash] all parts done, resetting ESP to normal boot");
+        diag_line(10, "ESP flash: done");
+    } else {
+        LOG("[esp-flash] job failed, resetting ESP to normal boot");
+        diag_line(10, "ESP flash: failed");
+    }
+    esp_reset_normal_boot();
+    return ok;
+}
+
+bool esp_flash_file(const char *path, uint32_t offset)
+{
+    if (!path)
+        return false;
+
+    esp_flash_job_t job;
+    memset(&job, 0, sizeof(job));
+    job.enabled = true;
+    job.part_count = 1;
+    strncpy(job.parts[0].path, path, sizeof(job.parts[0].path) - 1);
+    job.parts[0].path[sizeof(job.parts[0].path) - 1] = 0;
+    job.parts[0].offset = offset;
+    return esp_flash_job_run(&job);
 }
 
 static bool file_present(const char *path)
@@ -640,16 +685,7 @@ bool esp_flash_run_if_requested(void)
     diag_line(6, "ESP config job found");
     flash_config_disarm(json);
 
-    bool ok = true;
-    for (int i = 0; i < job.part_count; i++) {
-        LOGF("[esp-flash] part %d: %s @ 0x%08lx", i,
-             job.parts[i].path, (unsigned long)job.parts[i].offset);
-        diag_printf(7, "ESP part %d/%d", i + 1, job.part_count);
-        if (!esp_flash_file(job.parts[i].path, job.parts[i].offset)) {
-            ok = false;
-            break;
-        }
-    }
+    bool ok = esp_flash_job_run(&job);
     diag_line(11, ok ? "ESP flash result: OK" : "ESP flash result: FAIL");
     return ok;
 }
