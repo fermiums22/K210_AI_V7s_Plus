@@ -1,9 +1,11 @@
 @echo off
-setlocal
+setlocal EnableExtensions
 cd /d "%~dp0"
 
 set "PORT=%~1"
 if "%PORT%"=="" set "PORT=COM12"
+set "NO_BUILD=0"
+if /I "%~2"=="--no-build" set "NO_BUILD=1"
 set "BIN=%CD%\build\robot_show.bin"
 
 echo === K210 flash ===
@@ -11,8 +13,19 @@ echo Repo: %CD%
 echo Port: %PORT%
 echo.
 
-call build_k210.bat
-if errorlevel 1 exit /b 1
+rem Enable ANSI/VT escape handling in the current Windows console so kflash
+rem progress and INFO lines are actually colored instead of printed as ←[32m.
+py -3 -c "import ctypes; k=ctypes.windll.kernel32; h=k.GetStdHandle(-11); m=ctypes.c_uint(); k.GetConsoleMode(h, ctypes.byref(m)); k.SetConsoleMode(h, m.value | 4)" >nul 2>nul
+
+if "%NO_BUILD%"=="0" (
+  call build_k210.bat
+  if errorlevel 1 exit /b 1
+) else (
+  if not exist "%BIN%" (
+    echo ERROR: %BIN% not found. Run build_k210.bat first.
+    exit /b 1
+  )
+)
 
 py -3 -m kflash --help >nul 2>nul
 if errorlevel 1 (
