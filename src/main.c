@@ -12,7 +12,7 @@
 
 static int sd_mount_with_retries(void)
 {
-    const int attempts = 5;
+    const int attempts = 50;
     for (int i = 0; i < attempts; i++) {
         if (i > 0) {
             LOGF("[spi-loader-main] sd mount retry %d/%d", i + 1, attempts);
