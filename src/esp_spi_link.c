@@ -124,26 +124,50 @@ static void gpiohs_cs_write(int val)
         GPIOHS->output_val &= ~bit;
 }
 
+static void gpiohs_cs_init(void)
+{
+    uint32_t bit = GPIOHS_BIT(GPIOHS_CS);
+    fpioa_set_function(PIN_ESP_SPI_CS, FUNC_GPIOHS_NUM(GPIOHS_CS));
+    GPIOHS->iof_en &= ~bit;
+    GPIOHS->out_xor &= ~bit;
+    GPIOHS->pue &= ~bit;
+    GPIOHS->input_en &= ~bit;
+    GPIOHS->output_en |= bit;
+    gpiohs_cs_write(1);
+}
+
+static int spi_mode_value(int mode_no)
+{
+    switch (mode_no) {
+    case 0: return SPI_MODE_0;
+    case 1: return SPI_MODE_1;
+    case 2: return SPI_MODE_2;
+    default: return SPI_MODE_3;
+    }
+}
+
+static void setup_pins(int swap_d0_d1, int manual_cs)
+{
+    if (manual_cs)
+        gpiohs_cs_init();
+    else
+        fpioa_set_function(PIN_ESP_SPI_CS, FUNC_SPI0_SS0);
+
+    fpioa_set_function(PIN_ESP_SPI_CLK, FUNC_SPI0_SCLK);
+    fpioa_set_function(PIN_ESP_SPI_MOSI, swap_d0_d1 ? FUNC_SPI0_D1 : FUNC_SPI0_D0);
+    fpioa_set_function(PIN_ESP_SPI_MISO, swap_d0_d1 ? FUNC_SPI0_D0 : FUNC_SPI0_D1);
+}
+
 static int spi_open_config(int mode, uint32_t hz)
 {
-    spi_device_config_t cfg;
-
     if (!s_spi)
-        s_spi = io_open("/dev/spi1");
+        s_spi = io_open("/dev/spi0");
     if (!s_spi) {
-        LOG("[pure-spi] open /dev/spi1 failed");
+        LOG("[pure-spi] open /dev/spi0 failed");
         return 0;
     }
 
-    memset(&cfg, 0, sizeof(cfg));
-    cfg.mode = mode;
-    cfg.frame_format = SPI_FF_STANDARD;
-    cfg.chip_select_mask = 0x01;
-    cfg.data_bit_length = 8;
-
-    if (s_dev)
-        io_close(s_dev);
-    s_dev = spi_get_device(s_spi, &cfg);
+    s_dev = spi_get_device(s_spi, spi_mode_value(mode), SPI_FF_STANDARD, 1u, 8);
     if (!s_dev) {
         LOG("[pure-spi] get device failed");
         return 0;
@@ -153,43 +177,27 @@ static int spi_open_config(int mode, uint32_t hz)
     return 1;
 }
 
-static void setup_pins(int swap_d0_d1, int manual_cs)
-{
-    fpioa_set_function(PIN_WIFI_SPI_SCLK, FUNC_SPI1_SCLK);
-    fpioa_set_function(PIN_WIFI_SPI_MOSI, swap_d0_d1 ? FUNC_SPI1_D1 : FUNC_SPI1_D0);
-    fpioa_set_function(PIN_WIFI_SPI_MISO, swap_d0_d1 ? FUNC_SPI1_D0 : FUNC_SPI1_D1);
-
-    if (manual_cs) {
-        fpioa_set_function(PIN_WIFI_SPI_CS, FUNC_GPIOHS_NUM(GPIOHS_CS));
-        GPIOHS->output_en |= GPIOHS_BIT(GPIOHS_CS);
-        GPIOHS->input_en &= ~GPIOHS_BIT(GPIOHS_CS);
-        gpiohs_cs_write(1);
-    } else {
-        fpioa_set_function(PIN_WIFI_SPI_CS, FUNC_SPI1_SS0);
-    }
-}
-
 static void do_transfer(spi_case_t *c)
 {
     int len = c->wire_len;
     memset(s_tx, 0xA5, sizeof(s_tx));
     memset(s_rx, 0x00, sizeof(s_rx));
-    s_tx[0] = 'K';
-    s_tx[1] = 'E';
-    s_tx[2] = 'S';
-    s_tx[3] = 'P';
+    s_tx[0] = 0x11;
+    s_tx[1] = 0x22;
+    s_tx[2] = 0x33;
+    s_tx[3] = 0x44;
 
     if (!spi_open_config(c->mode, c->hz))
         return;
 
     if (c->manual_cs)
         gpiohs_cs_write(0);
-    spi_dev_transfer_full_duplex(s_dev, s_tx, s_rx, len);
+    int r = spi_dev_transfer_full_duplex(s_dev, s_tx, len, s_rx, len);
     if (c->manual_cs)
         gpiohs_cs_write(1);
 
-    int off = find_magic(s_rx, len);
-    if (off >= 0) {
+    int off = find_magic(s_rx, r > len ? len : r);
+    if (r >= len && off >= 0) {
         c->good++;
         c->last_magic_off = off;
     } else {
@@ -209,19 +217,19 @@ static int better_case(const spi_case_t *a, const spi_case_t *b)
 static void run_scan_once(void)
 {
     static const int modes[] = {0, 1, 2, 3};
-    static const uint32_t speeds[] = {100000, 250000, 500000, 1000000, 2000000};
+    static const uint32_t speeds[] = {100000, 500000, 1000000};
     static const int swaps[] = {0, 1};
-    static const int manual_cs_values[] = {1, 0};
-    static const int wire_lens[] = {4, 8, 16, 32, 64};
+    static const int manual_cs_values[] = {0, 1};
+    static const int wire_lens[] = {32, 34};
 
     memset(&s_best, 0, sizeof(s_best));
     s_best.bad = 0xffffffffu;
     s_have_best = 0;
 
-    for (unsigned mi = 0; mi < sizeof(modes)/sizeof(modes[0]); mi++) {
-        for (unsigned si = 0; si < sizeof(speeds)/sizeof(speeds[0]); si++) {
-            for (unsigned swi = 0; swi < sizeof(swaps)/sizeof(swaps[0]); swi++) {
-                for (unsigned ci = 0; ci < sizeof(manual_cs_values)/sizeof(manual_cs_values[0]); ci++) {
+    for (unsigned ci = 0; ci < sizeof(manual_cs_values)/sizeof(manual_cs_values[0]); ci++) {
+        for (unsigned swi = 0; swi < sizeof(swaps)/sizeof(swaps[0]); swi++) {
+            for (unsigned si = 0; si < sizeof(speeds)/sizeof(speeds[0]); si++) {
+                for (unsigned mi = 0; mi < sizeof(modes)/sizeof(modes[0]); mi++) {
                     for (unsigned li = 0; li < sizeof(wire_lens)/sizeof(wire_lens[0]); li++) {
                         spi_case_t c;
                         memset(&c, 0, sizeof(c));
@@ -264,7 +272,7 @@ static void esp_spi_task(void *arg)
     LOG("[pure-spi] scanner task started");
     for (;;) {
         LOG("[pure-spi] waiting ESP UART marker: kesp: spi slave ready");
-        while (!esp_uart_log_seen_marker("kesp: spi slave ready")) {
+        while (!esp_uart_log_spi_ready()) {
             if (wait_if_paused("wait-ready"))
                 goto next_cycle;
             vTaskDelay(pdMS_TO_TICKS(200));
