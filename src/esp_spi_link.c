@@ -1,88 +1,79 @@
 #include "esp_spi_link.h"
 #include "pinout.h"
 #include "log.h"
+#include "diag_screen.h"
 #include "amp.h"
 #include "esp_uart_log.h"
 
 #include <FreeRTOS.h>
 #include <task.h>
 #include <devices.h>
+#include <filesystem.h>
 #include <fpioa.h>
-#include <platform.h>
-#include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
-#define FRAME_MAGIC     0x5053454bu /* bytes on wire: 4b 45 53 50 == "KESP" */
-#define RX_MAX          64
-#define TEST_WARMUP     3u
-#define TEST_FRAMES     64u
-#define GPIOHS_CS       0
-#define GPIOHS_BIT(n)   (1u << (n))
-#define FUNC_GPIOHS_NUM(n) ((fpioa_function_t)(24 + (n)))
+#define FRAME_MAGIC 0x5053454bu
+#define FRAME_BYTES 32
+#define SPI_WIRE_BYTES 34
+#define DATA_BYTES 20
+#define BAD_DUMP_LIMIT 8
+
+/* Bring-up speed. Do not free-run the Arduino ESP8266 SPISlave when the queue
+ * is empty: continuous idle polling crashes it. Poll only after ESP reports an
+ * incoming TCP PUT on UART; then K210 drains frames into SD. */
+#define ESP_SPI_HZ 1000000.0
+#define BAD_DELAY_AFTER_FRAMES 16u
+#define NO_GOOD_ABORT_FRAMES 512u
+
+enum { FT_IDLE = 0, FT_BEGIN = 1, FT_DATA = 2, FT_END = 3, FT_INFO = 4 };
 
 typedef struct {
-    volatile uint32_t input_val;
-    volatile uint32_t input_en;
-    volatile uint32_t output_en;
-    volatile uint32_t output_val;
-    volatile uint32_t pue;
-    volatile uint32_t ds;
-    volatile uint32_t rise_ie;
-    volatile uint32_t rise_ip;
-    volatile uint32_t fall_ie;
-    volatile uint32_t fall_ip;
-    volatile uint32_t high_ie;
-    volatile uint32_t high_ip;
-    volatile uint32_t low_ie;
-    volatile uint32_t low_ip;
-    volatile uint32_t iof_en;
-    volatile uint32_t iof_sel;
-    volatile uint32_t out_xor;
-} gpiohs_regs_t;
+    uint32_t magic;
+    uint8_t type;
+    uint8_t seq;
+    uint16_t len;
+    uint32_t value;
+    uint8_t data[DATA_BYTES];
+} __attribute__((packed)) kframe_t;
 
-typedef struct {
-    int mode;
-    uint32_t hz;
-    int swap_d0_d1;
-    int manual_cs;
-    int wire_len;
-    uint32_t good;
-    uint32_t bad;
-    int last_magic_off;
-} spi_case_t;
-
-static gpiohs_regs_t *const GPIOHS = (gpiohs_regs_t *)GPIOHS_BASE_ADDR;
-static handle_t s_spi;
 static handle_t s_dev;
-static uint8_t s_tx[RX_MAX];
-static uint8_t s_rx[RX_MAX];
-static spi_case_t s_best;
-static int s_have_best;
-static volatile int s_pause;
-static volatile int s_restart_after_pause;
+static handle_t s_file;
+static uint32_t s_expected, s_written, s_total, s_last_total;
+static uint32_t s_good_frames, s_bad_frames, s_last_good, s_last_bad;
+static uint32_t s_bad_dumps;
+static volatile int s_paused;
 static volatile int s_started;
+static TickType_t s_last_tick;
+static char s_name[64];
+
+static void close_file(void)
+{
+    if (s_file) {
+        filesystem_file_close(s_file);
+        s_file = 0;
+    }
+}
 
 void esp_spi_link_pause(int pause)
 {
-    s_pause = pause ? 1 : 0;
-    if (s_pause)
-        s_restart_after_pause = 1;
-    LOGF("[pure-spi] pause=%d", s_pause);
+    int new_state = pause ? 1 : 0;
+    if (s_paused == new_state)
+        return;
+    s_paused = new_state;
+    if (s_paused) {
+        close_file();
+        LOG("[wifi-spi] paused");
+        diag_line(12, "WiFi/SPI paused");
+    } else {
+        LOG("[wifi-spi] resumed");
+        diag_line(12, "WiFi/SPI receiver");
+    }
 }
 
-static int wait_if_paused(const char *where)
+static int safe_name(const char *s)
 {
-    if (!s_pause)
-        return 0;
-
-    LOGF("[pure-spi] paused at %s", where);
-    s_restart_after_pause = 1;
-    while (s_pause) {
-        amp_set(false);
-        vTaskDelay(pdMS_TO_TICKS(20));
-    }
-    LOG("[pure-spi] resumed; restart from ESP-ready wait");
-    return 1;
+    return s[0] && s[0] != '/' && s[0] != '\\' && !strstr(s, "..");
 }
 
 static uint32_t rd32le(const uint8_t *p)
@@ -93,313 +84,195 @@ static uint32_t rd32le(const uint8_t *p)
            ((uint32_t)p[3] << 24);
 }
 
-static int find_magic(const uint8_t *rx, int len)
+static void dump_bad_frame(const uint8_t *rx, int r)
 {
-    if (len < 4)
-        return -1;
-    for (int off = 0; off <= len - 4; off++) {
-        if (rd32le(rx + off) == FRAME_MAGIC)
-            return off;
-    }
-    return -1;
-}
-
-static const char *cs_name(int manual_cs)
-{
-    return manual_cs ? "gpiohs" : "hwss0";
-}
-
-static const char *map_name(int swap_d0_d1)
-{
-    return swap_d0_d1 ? "swap_d0_d1" : "normal_d0_mosi_d1_miso";
-}
-
-static void gpiohs_cs_write(int val)
-{
-    uint32_t bit = GPIOHS_BIT(GPIOHS_CS);
-    if (val)
-        GPIOHS->output_val |= bit;
-    else
-        GPIOHS->output_val &= ~bit;
-}
-
-static void gpiohs_cs_init(void)
-{
-    uint32_t bit = GPIOHS_BIT(GPIOHS_CS);
-    fpioa_set_function(PIN_ESP_SPI_CS, FUNC_GPIOHS_NUM(GPIOHS_CS));
-    GPIOHS->iof_en &= ~bit;
-    GPIOHS->out_xor &= ~bit;
-    GPIOHS->pue &= ~bit;
-    GPIOHS->input_en &= ~bit;
-    GPIOHS->output_en |= bit;
-    gpiohs_cs_write(1); /* ESP8266 SPISlave CS is active-low. */
-}
-
-static void map_spi_pins(int swap_d0_d1, int manual_cs)
-{
-    if (manual_cs)
-        gpiohs_cs_init();
-    else
-        fpioa_set_function(PIN_ESP_SPI_CS, FUNC_SPI0_SS0);
-
-    fpioa_set_function(PIN_ESP_SPI_CLK, FUNC_SPI0_SCLK);
-
-    if (!swap_d0_d1) {
-        fpioa_set_function(PIN_ESP_SPI_MOSI, FUNC_SPI0_D0);
-        fpioa_set_function(PIN_ESP_SPI_MISO, FUNC_SPI0_D1);
-    } else {
-        fpioa_set_function(PIN_ESP_SPI_MOSI, FUNC_SPI0_D1);
-        fpioa_set_function(PIN_ESP_SPI_MISO, FUNC_SPI0_D0);
-    }
-}
-
-static int spi_mode_value(int mode_no)
-{
-    switch (mode_no) {
-    case 0: return SPI_MODE_0;
-    case 1: return SPI_MODE_1;
-    case 2: return SPI_MODE_2;
-    default: return SPI_MODE_3;
-    }
-}
-
-static void open_spi_case(const spi_case_t *c)
-{
-    if (!s_spi) {
-        s_spi = io_open("/dev/spi0");
-        configASSERT(s_spi);
-    }
-
-    map_spi_pins(c->swap_d0_d1, c->manual_cs);
-    s_dev = spi_get_device(s_spi, spi_mode_value(c->mode), SPI_FF_STANDARD, 1u, 8);
-    configASSERT(s_dev);
-    spi_dev_set_clock_rate(s_dev, c->hz);
-}
-
-static void fill_tx(uint32_t seq, int len)
-{
-    memset(s_tx, 0, sizeof(s_tx));
-    for (int i = 0; i < len && i < RX_MAX; i++)
-        s_tx[i] = (uint8_t)(0x80u + ((seq + (uint32_t)i) & 0x3fu));
-
-    if (len >= 4) {
-        s_tx[0] = 0x11;
-        s_tx[1] = 0x22;
-        s_tx[2] = 0x33;
-        s_tx[3] = 0x44;
-    }
-}
-
-static int transfer_once(const spi_case_t *c, uint32_t seq)
-{
-    memset(s_rx, 0, sizeof(s_rx));
-    fill_tx(seq, c->wire_len);
-
-    if (c->manual_cs)
-        gpiohs_cs_write(0);
-
-    int r = spi_dev_transfer_full_duplex(s_dev, s_tx, c->wire_len, s_rx, c->wire_len);
-
-    if (c->manual_cs)
-        gpiohs_cs_write(1);
-
-    return r;
-}
-
-static void log_sample(const spi_case_t *c, int r, int off)
-{
-    LOGF("[pure-spi] sample mode=%d hz=%lu cs=%s map=%s len=%d r=%d off=%d rx=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x m0=%08lx m1=%08lx m2=%08lx",
-         c->mode,
-         (unsigned long)c->hz,
-         cs_name(c->manual_cs),
-         map_name(c->swap_d0_d1),
-         c->wire_len,
-         r,
-         off,
-         s_rx[0], s_rx[1], s_rx[2], s_rx[3],
-         s_rx[4], s_rx[5], s_rx[6], s_rx[7],
-         s_rx[8], s_rx[9], s_rx[10], s_rx[11],
-         (unsigned long)rd32le(s_rx + 0),
-         (unsigned long)rd32le(s_rx + 1),
-         (unsigned long)rd32le(s_rx + 2));
-}
-
-static void remember_best(const spi_case_t *c)
-{
-    if (!s_have_best || c->good > s_best.good ||
-        (c->good == s_best.good && c->bad < s_best.bad)) {
-        s_best = *c;
-        s_have_best = 1;
-    }
-}
-
-static spi_case_t run_case(spi_case_t c)
-{
-    open_spi_case(&c);
-    c.good = 0;
-    c.bad = 0;
-    c.last_magic_off = -1;
-
-    LOGF("[pure-spi] case start mode=%d hz=%lu cs=%s map=%s len=%d",
-         c.mode,
-         (unsigned long)c.hz,
-         cs_name(c.manual_cs),
-         map_name(c.swap_d0_d1),
-         c.wire_len);
-
-    for (uint32_t i = 0; i < TEST_WARMUP + TEST_FRAMES; i++) {
-        if (wait_if_paused("case"))
-            return c;
-
-        amp_set(false);
-        int r = transfer_once(&c, i);
-        int off = find_magic(s_rx, r > c.wire_len ? c.wire_len : r);
-
-        if (i == TEST_WARMUP)
-            log_sample(&c, r, off);
-
-        if (i >= TEST_WARMUP) {
-            if (r >= c.wire_len && off >= 0) {
-                c.good++;
-                c.last_magic_off = off;
-            } else {
-                c.bad++;
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(2));
-    }
-
-    LOGF("[pure-spi] case done mode=%d hz=%lu cs=%s map=%s len=%d good=%lu bad=%lu last_off=%d",
-         c.mode,
-         (unsigned long)c.hz,
-         cs_name(c.manual_cs),
-         map_name(c.swap_d0_d1),
-         c.wire_len,
-         (unsigned long)c.good,
-         (unsigned long)c.bad,
-         c.last_magic_off);
-
-    if (c.good)
-        remember_best(&c);
-
-    vTaskDelay(pdMS_TO_TICKS(20));
-    return c;
-}
-
-static void run_scan(void)
-{
-    static const uint32_t hz_list[] = { 100000u, 500000u, 1000000u };
-    static const int len_list[] = { 32, 34 };
-
-    s_have_best = 0;
-    memset(&s_best, 0, sizeof(s_best));
-    LOG("[pure-spi] scan start: mode 0/1/2/3, normal/swap D0D1, hw/gpiohs CS, 32/34-byte transfers");
-
-    for (int manual_cs = 0; manual_cs <= 1; manual_cs++) {
-        for (int swap = 0; swap <= 1; swap++) {
-            for (unsigned hi = 0; hi < sizeof(hz_list) / sizeof(hz_list[0]); hi++) {
-                for (int mode = 0; mode < 4; mode++) {
-                    for (unsigned li = 0; li < sizeof(len_list) / sizeof(len_list[0]); li++) {
-                        if (s_restart_after_pause)
-                            return;
-                        spi_case_t c;
-                        memset(&c, 0, sizeof(c));
-                        c.mode = mode;
-                        c.hz = hz_list[hi];
-                        c.swap_d0_d1 = swap;
-                        c.manual_cs = manual_cs;
-                        c.wire_len = len_list[li];
-                        (void)run_case(c);
-                    }
-                }
-            }
-        }
-    }
-
-    if (s_restart_after_pause)
+    if (s_bad_dumps >= BAD_DUMP_LIMIT && (s_bad_frames & 0x3ffu) != 0)
         return;
 
-    if (s_have_best) {
-        LOGF("[pure-spi] VERDICT SPI_OK best mode=%d hz=%lu cs=%s map=%s len=%d good=%lu bad=%lu off=%d",
-             s_best.mode,
-             (unsigned long)s_best.hz,
-             cs_name(s_best.manual_cs),
-             map_name(s_best.swap_d0_d1),
-             s_best.wire_len,
-             (unsigned long)s_best.good,
-             (unsigned long)s_best.bad,
-             s_best.last_magic_off);
-    } else {
-        LOG("[pure-spi] VERDICT SPI_FAIL no KESP magic in any tested mode/map/cs/length");
-        LOG("[pure-spi] If ESP UART rx counter increases but K210 sees no magic, suspect ESP8266 SPISlave protocol/alignment, not physical pins");
+    s_bad_dumps++;
+    LOGF("[wifi-spi] bad raw r=%d rx=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x m0=%08lx m1=%08lx m2=%08lx",
+         r,
+         rx[0], rx[1], rx[2], rx[3], rx[4], rx[5], rx[6], rx[7],
+         rx[8], rx[9], rx[10], rx[11],
+         (unsigned long)rd32le(rx + 0),
+         (unsigned long)rd32le(rx + 1),
+         (unsigned long)rd32le(rx + 2));
+}
+
+static int read_frame(kframe_t *fr)
+{
+    uint8_t tx[SPI_WIRE_BYTES] = { 3, 0 };
+    uint8_t rx[SPI_WIRE_BYTES] = { 0 };
+    int r = spi_dev_transfer_full_duplex(s_dev, tx, sizeof(tx), rx, sizeof(rx));
+    if (r < (int)sizeof(rx)) {
+        s_bad_frames++;
+        dump_bad_frame(rx, r);
+        return 0;
+    }
+
+    for (int off = 0; off <= 2; off++) {
+        if (rd32le(rx + off) == FRAME_MAGIC) {
+            memcpy(fr, rx + off, sizeof(*fr));
+            s_good_frames++;
+            if (off != 2)
+                LOGF("[wifi-spi] frame magic offset=%d", off);
+            return 1;
+        }
+    }
+
+    s_bad_frames++;
+    dump_bad_frame(rx, r);
+    return 0;
+}
+
+static void begin_file(const kframe_t *fr)
+{
+    close_file();
+    uint8_t n = fr->len < DATA_BYTES ? fr->len : DATA_BYTES;
+    memcpy(s_name, fr->data, n);
+    s_name[n] = 0;
+    if (!safe_name(s_name)) {
+        LOGF("[wifi-spi] bad file name: %s", s_name);
+        return;
+    }
+    char path[96];
+    snprintf(path, sizeof(path), "/fs/0/%s", s_name);
+    s_file = filesystem_file_open(path, FILE_ACCESS_WRITE, FILE_MODE_CREATE_ALWAYS);
+    s_expected = fr->value;
+    s_written = 0;
+    LOGF("[wifi-spi] BEGIN %s %lu", s_name, (unsigned long)s_expected);
+    diag_printf(4, "WiFi %.20s", s_name);
+    diag_printf(5, "%lu bytes", (unsigned long)s_expected);
+    if (!s_file)
+        LOGF("[wifi-spi] open failed: %s", path);
+}
+
+static void data_file(const kframe_t *fr)
+{
+    if (!s_file || fr->len == 0 || fr->len > DATA_BYTES)
+        return;
+    if (filesystem_file_write(s_file, fr->data, fr->len) == (int)fr->len) {
+        s_written += fr->len;
+        s_total += fr->len;
     }
 }
 
-static void run_best_forever(void)
+static void end_file(void)
 {
-    uint32_t good = 0;
-    uint32_t bad = 0;
-    TickType_t last = xTaskGetTickCount();
+    close_file();
+    LOGF("[wifi-spi] END %s %lu/%lu", s_name, (unsigned long)s_written, (unsigned long)s_expected);
+    diag_printf(6, "Done %lu/%lu", (unsigned long)s_written, (unsigned long)s_expected);
+    esp_uart_log_clear_put_active();
+    LOG("[wifi-spi] PUT done, stop polling until next TCP PUT");
+}
 
-    open_spi_case(&s_best);
-    LOG("[pure-spi] stability loop on best case");
-
-    for (;;) {
-        if (wait_if_paused("stable-loop"))
-            return;
-
-        amp_set(false);
-        int r = transfer_once(&s_best, good + bad);
-        int off = find_magic(s_rx, r > s_best.wire_len ? s_best.wire_len : r);
-        if (r >= s_best.wire_len && off >= 0)
-            good++;
-        else
-            bad++;
-
-        TickType_t now = xTaskGetTickCount();
-        if (now - last >= pdMS_TO_TICKS(1000)) {
-            last = now;
-            LOGF("[pure-spi] stable mode=%d hz=%lu cs=%s map=%s len=%d good=%lu bad=%lu last_off=%d rx0=%02x %02x %02x %02x",
-                 s_best.mode,
-                 (unsigned long)s_best.hz,
-                 cs_name(s_best.manual_cs),
-                 map_name(s_best.swap_d0_d1),
-                 s_best.wire_len,
-                 (unsigned long)good,
-                 (unsigned long)bad,
-                 off,
-                 s_rx[0], s_rx[1], s_rx[2], s_rx[3]);
-        }
-        vTaskDelay(pdMS_TO_TICKS(10));
+static void speed_tick(void)
+{
+    TickType_t now = xTaskGetTickCount();
+    TickType_t dt = now - s_last_tick;
+    if (dt < pdMS_TO_TICKS(1000))
+        return;
+    uint32_t d = s_total - s_last_total;
+    uint32_t dg = s_good_frames - s_last_good;
+    uint32_t db = s_bad_frames - s_last_bad;
+    uint32_t kbps = d * 1000u / 1024u / (dt * portTICK_PERIOD_MS);
+    if (kbps || s_file || dg || db) {
+        LOGF("[wifi-spi] %lu kB/s total=%lu file=%lu/%lu frames ok=%lu bad=%lu",
+             (unsigned long)kbps, (unsigned long)s_total,
+             (unsigned long)s_written, (unsigned long)s_expected,
+             (unsigned long)dg, (unsigned long)db);
+        diag_printf(7, "%lu kB/s", (unsigned long)kbps);
+        diag_printf(8, "%lu/%lu", (unsigned long)s_written, (unsigned long)s_expected);
     }
+    s_last_total = s_total;
+    s_last_good = s_good_frames;
+    s_last_bad = s_bad_frames;
+    s_last_tick = now;
+}
+
+static void init_spi(void)
+{
+    fpioa_set_function(PIN_ESP_SPI_CS, FUNC_SPI0_SS0);
+    fpioa_set_function(PIN_ESP_SPI_CLK, FUNC_SPI0_SCLK);
+    fpioa_set_function(PIN_ESP_SPI_MOSI, FUNC_SPI0_D0);
+    fpioa_set_function(PIN_ESP_SPI_MISO, FUNC_SPI0_D1);
+    handle_t spi = io_open("/dev/spi0");
+    configASSERT(spi);
+    s_dev = spi_get_device(spi, SPI_MODE_1, SPI_FF_STANDARD, 1u, 8);
+    configASSERT(s_dev);
+    spi_dev_set_clock_rate(s_dev, ESP_SPI_HZ);
+    LOG("[wifi-spi] ready hz=1000000 mode=1 gated-by-TCP-PUT");
+    diag_line(3, "WiFi/SPI gated 1M");
 }
 
 void esp_spi_link_run_forever(void)
 {
-    for (;;) {
-        amp_set(false);
-        s_restart_after_pause = 0;
+    amp_set(false);
+    init_spi();
+    s_last_tick = xTaskGetTickCount();
+    int announced_ready = 0;
+    int announced_wait = 0;
+    uint32_t bad_frames = 0;
+    uint32_t frames_since_good = 0;
 
-        LOG("[pure-spi] waiting ESP UART marker: kesp: spi slave ready");
-        while (!esp_uart_log_spi_ready()) {
-            wait_if_paused("wait-ready");
-            amp_set(false);
+    for (;;) {
+        if (s_paused) {
+            speed_tick();
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        if (!esp_uart_log_spi_ready()) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            continue;
+        }
+        if (!announced_ready) {
+            announced_ready = 1;
+            LOG("[wifi-spi] ESP SPI ready, waiting TCP PUT before polling");
+            diag_line(3, "WiFi/SPI wait PUT");
+        }
+        if (!esp_uart_log_put_active()) {
+            if (!announced_wait) {
+                announced_wait = 1;
+                LOG("[wifi-spi] idle, no SPI polling until TCP PUT");
+            }
+            speed_tick();
             vTaskDelay(pdMS_TO_TICKS(20));
+            continue;
+        }
+        if (announced_wait) {
+            announced_wait = 0;
+            bad_frames = 0;
+            frames_since_good = 0;
+            LOG("[wifi-spi] TCP PUT active, polling frames");
         }
 
-        if (s_restart_after_pause)
-            continue;
+        kframe_t fr;
+        if (read_frame(&fr)) {
+            bad_frames = 0;
+            frames_since_good = 0;
+            if (fr.type == FT_BEGIN) begin_file(&fr);
+            else if (fr.type == FT_DATA) data_file(&fr);
+            else if (fr.type == FT_END) end_file();
+        } else {
+            bad_frames++;
+            frames_since_good++;
+            if (!s_file && frames_since_good >= NO_GOOD_ABORT_FRAMES) {
+                LOG("[wifi-spi] no valid frames after TCP PUT, stop polling to protect ESP");
+                esp_uart_log_clear_put_active();
+                frames_since_good = 0;
+            }
+        }
 
-        LOG("[pure-spi] ESP marker detected, start pure SPI peripheral scan");
-        run_scan();
+        speed_tick();
 
-        if (s_restart_after_pause)
-            continue;
-
-        if (s_have_best)
-            run_best_forever();
-        else
-            vTaskDelay(pdMS_TO_TICKS(1000));
+        if (s_file) {
+            taskYIELD();
+        } else if (bad_frames >= BAD_DELAY_AFTER_FRAMES) {
+            bad_frames = 0;
+            vTaskDelay(pdMS_TO_TICKS(1));
+        } else {
+            taskYIELD();
+        }
     }
 }
 
@@ -412,11 +285,10 @@ static void esp_spi_link_task(void *arg)
 void esp_spi_link_start(void)
 {
     if (s_started) {
-        LOG("[pure-spi] scanner task already running");
+        LOG("[wifi-spi] receiver task already running");
         return;
     }
-
     s_started = 1;
-    xTaskCreate(esp_spi_link_task, "esp_spi", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
-    LOG("[pure-spi] scanner task started");
+    xTaskCreate(esp_spi_link_task, "wifi_spi", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
+    LOG("[wifi-spi] receiver task started");
 }
