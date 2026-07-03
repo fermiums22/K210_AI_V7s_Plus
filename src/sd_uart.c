@@ -91,15 +91,16 @@ static int read_line(char *out, int out_len, uint32_t timeout_ms)
     int bytes = 0;
     char hex[96];
     uint8_t c;
-    TickType_t start = xTaskGetTickCount();
 
     hex[0] = 0;
     LOGF("[sd-uart] read_line: waiting %lu ms", (unsigned long)timeout_ms);
 
-    while (n < out_len - 1 && !deadline_expired(start, timeout_ms)) {
-        if (!uarths_try_read_byte(&c)) {
-            poll_delay();
-            continue;
+    while (n < out_len - 1) {
+        if (!read_byte_timeout(&c, timeout_ms)) {
+            out[n] = 0;
+            LOGF("[sd-uart] read_line timeout after %d chars, %d bytes, hex: %s", n, bytes, hex);
+            LOGF("[sd-uart] read_line partial text: %s", out);
+            return 0;
         }
 
         bytes++;
@@ -118,7 +119,7 @@ static int read_line(char *out, int out_len, uint32_t timeout_ms)
     }
 
     out[n] = 0;
-    LOGF("[sd-uart] read_line timeout after %d chars, %d bytes, hex: %s", n, bytes, hex);
+    LOGF("[sd-uart] read_line too long after %d chars, %d bytes, hex: %s", n, bytes, hex);
     LOGF("[sd-uart] read_line partial text: %s", out);
     return 0;
 }
