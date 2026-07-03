@@ -66,12 +66,12 @@ static void host_write(const uint8_t *data, uint32_t size)
         uarths_write_byte(data[i]);
 }
 
-static void log_rx_byte(uint8_t c)
+static void append_hex_byte(char *dst, size_t dst_size, uint8_t c)
 {
-    if (c >= 0x20 && c <= 0x7e)
-        LOGF("[sd-uart] rx byte %02X '%c'", (unsigned)c, (char)c);
-    else
-        LOGF("[sd-uart] rx byte %02X", (unsigned)c);
+    size_t len = strlen(dst);
+    if (len + 4 >= dst_size)
+        return;
+    snprintf(dst + len, dst_size - len, "%02X ", (unsigned)c);
 }
 
 static int read_byte_timeout(uint8_t *out, uint32_t timeout_ms)
@@ -88,27 +88,39 @@ static int read_byte_timeout(uint8_t *out, uint32_t timeout_ms)
 static int read_line(char *out, int out_len, uint32_t timeout_ms)
 {
     int n = 0;
+    int bytes = 0;
+    char hex[96];
     uint8_t c;
+    TickType_t start = xTaskGetTickCount();
 
+    hex[0] = 0;
     LOGF("[sd-uart] read_line: waiting %lu ms", (unsigned long)timeout_ms);
 
-    while (n < out_len - 1) {
-        if (!read_byte_timeout(&c, timeout_ms)) {
-            out[n] = 0;
-            LOGF("[sd-uart] read_line timeout after %d chars: %s", n, out);
-            return 0;
+    while (n < out_len - 1 && !deadline_expired(start, timeout_ms)) {
+        if (!uarths_try_read_byte(&c)) {
+            poll_delay();
+            continue;
         }
 
-        log_rx_byte(c);
+        bytes++;
+        if (bytes <= 24)
+            append_hex_byte(hex, sizeof(hex), c);
 
-        if (c == '\n')
-            break;
+        if (c == '\n') {
+            out[n] = 0;
+            LOGF("[sd-uart] read_line done %d chars, %d bytes, hex: %s", n, bytes, hex);
+            LOGF("[sd-uart] read_line text: %s", out);
+            return 1;
+        }
+
         if (c != '\r')
             out[n++] = (char)c;
     }
+
     out[n] = 0;
-    LOGF("[sd-uart] read_line done %d chars: %s", n, out);
-    return 1;
+    LOGF("[sd-uart] read_line timeout after %d chars, %d bytes, hex: %s", n, bytes, hex);
+    LOGF("[sd-uart] read_line partial text: %s", out);
+    return 0;
 }
 
 static int wait_magic(uint32_t window_ms)
