@@ -19,10 +19,13 @@
 #define DATA_BYTES 20
 #define BAD_DUMP_LIMIT 12
 
-/* ESP8266 Arduino SPISlave drives MISO for SPIMode1 timing. Mode0 produced
- * valid clocking but garbage frames on this board, so keep bring-up at 1 MHz
- * and validate magic/offset first. */
-#define ESP_SPI_HZ 1000000.0
+/* Target path is PC -> WiFi -> ESP -> SPI -> K210 -> SD.  The ESP8266
+ * Arduino SPISlave buffer is only 32 bytes, so throughput mostly comes from
+ * clock rate and avoiding 1 ms sleeps per frame.  Start at 5 MHz; if this is
+ * clean we can raise to 8-10 MHz later. */
+#define ESP_SPI_HZ 5000000.0
+#define IDLE_DELAY_AFTER_FRAMES 16u
+#define BAD_DELAY_AFTER_FRAMES 64u
 
 enum { FT_IDLE = 0, FT_BEGIN = 1, FT_DATA = 2, FT_END = 3, FT_INFO = 4 };
 
@@ -111,9 +114,8 @@ static int read_frame(kframe_t *fr)
         if (rd32le(rx + off) == FRAME_MAGIC) {
             memcpy(fr, rx + off, sizeof(*fr));
             s_good_frames++;
-            if (off != 2) {
+            if (off != 2)
                 LOGF("[wifi-spi] frame magic offset=%d", off);
-            }
             return 1;
         }
     }
@@ -197,8 +199,8 @@ static void init_spi(void)
     s_dev = spi_get_device(spi, SPI_MODE_1, SPI_FF_STANDARD, 1u, 8);
     configASSERT(s_dev);
     spi_dev_set_clock_rate(s_dev, ESP_SPI_HZ);
-    LOG("[wifi-spi] ready hz=1000000 mode=1 waiting-for-esp-ready");
-    diag_line(3, "WiFi/SPI wait ESP");
+    LOG("[wifi-spi] ready hz=5000000 mode=1 waiting-for-esp-ready");
+    diag_line(3, "WiFi/SPI wait ESP 5M");
 }
 
 void esp_spi_link_run_forever(void)
@@ -207,6 +209,9 @@ void esp_spi_link_run_forever(void)
     init_spi();
     s_last_tick = xTaskGetTickCount();
     int announced_ready = 0;
+    uint32_t idle_frames = 0;
+    uint32_t bad_frames = 0;
+
     for (;;) {
         if (s_paused) {
             speed_tick();
@@ -219,16 +224,44 @@ void esp_spi_link_run_forever(void)
         }
         if (!announced_ready) {
             announced_ready = 1;
-            LOG("[wifi-spi] ESP SPI ready, polling frames");
-            diag_line(3, "WiFi/SPI polling");
+            LOG("[wifi-spi] ESP SPI ready, polling frames fast");
+            diag_line(3, "WiFi/SPI polling fast");
         }
+
         kframe_t fr;
         if (read_frame(&fr)) {
-            if (fr.type == FT_BEGIN) begin_file(&fr);
-            else if (fr.type == FT_DATA) data_file(&fr);
-            else if (fr.type == FT_END) end_file();
+            bad_frames = 0;
+            if (fr.type == FT_BEGIN) {
+                idle_frames = 0;
+                begin_file(&fr);
+            } else if (fr.type == FT_DATA) {
+                idle_frames = 0;
+                data_file(&fr);
+            } else if (fr.type == FT_END) {
+                idle_frames = 0;
+                end_file();
+            } else {
+                idle_frames++;
+            }
+        } else {
+            bad_frames++;
         }
+
         speed_tick();
-        vTaskDelay(pdMS_TO_TICKS(1));
+
+        /* No 1 ms delay in the data path.  Sleeping per 20-byte frame capped the
+         * link around 20 kB/s.  Only back off when the ESP queue is idle or the
+         * link is producing repeated bad frames. */
+        if (s_file) {
+            taskYIELD();
+        } else if (bad_frames >= BAD_DELAY_AFTER_FRAMES) {
+            bad_frames = 0;
+            vTaskDelay(pdMS_TO_TICKS(1));
+        } else if (idle_frames >= IDLE_DELAY_AFTER_FRAMES) {
+            idle_frames = 0;
+            vTaskDelay(pdMS_TO_TICKS(1));
+        } else {
+            taskYIELD();
+        }
     }
 }
