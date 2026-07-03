@@ -11,6 +11,8 @@
  *   - XCLK only starts inside dvp_config() (it sets CMOS_CLK_ENABLE).
  *   - GC0328 needs ~100 ms after reset; id reads 0x00 until it wakes.
  *   - Output index 0 is the AI path, index 1 is the RGB565 display path.
+ *   - LCD uses SPI0 octal on the same DVP data pads. Before camera capture
+ *     switch the internal mux back to DVP; after capture switch it back to LCD.
  */
 #include "camera.h"
 #include "lcd.h"
@@ -40,11 +42,21 @@ static int s_started;
 static int s_chip_id = -1;
 static char s_cam_name[32];
 
+static void cam_route_dvp_data(int to_camera)
+{
+    /* 1 routes SPI0 octal to the LCD on DVP data pads; 0 returns the pads to
+     * the DVP camera peripheral. The LCD driver enables 1 during lcd_init(). */
+    sysctl_set_spi0_dvp_data(to_camera ? 0 : 1);
+    usleep(2 * 1000);
+}
+
 static void cam_pins(void)
 {
     /* Maix Dock routes the camera/LCD FPC banks at 1.8 V in the vendor demos. */
     sysctl_set_power_mode(SYSCTL_POWER_BANK6, SYSCTL_POWER_V18);
     sysctl_set_power_mode(SYSCTL_POWER_BANK7, SYSCTL_POWER_V18);
+
+    cam_route_dvp_data(1);
 
     fpioa_set_function(40, FUNC_SCCB_SDA);
     fpioa_set_function(41, FUNC_SCCB_SCLK);
@@ -177,16 +189,20 @@ static int cam_grab_once(int timeout_ms)
     volatile dvp_t *dvp = (volatile dvp_t *)DVP_BASE_ADDR;
     s_frame_done = 0;
 
+    cam_route_dvp_data(1);
+    printf("[cam] route DVP data pads to CAMERA\n");
+
     /* Do not rely only on the PLIC callback. Poll the DVP finish bit as well:
      * if IRQ routing is late/noisy we still detect a completed frame. */
-    dvp->sts |= DVP_STS_FRAME_FINISH | DVP_STS_FRAME_FINISH_WE;
+    dvp->sts = DVP_STS_FRAME_START | DVP_STS_FRAME_START_WE |
+               DVP_STS_FRAME_FINISH | DVP_STS_FRAME_FINISH_WE;
     dvp_enable_frame(s_dvp);
 
     for (int t = 0; t < timeout_ms; t++) {
         if (s_frame_done)
             return 1;
         if (dvp->sts & DVP_STS_FRAME_FINISH) {
-            dvp->sts |= DVP_STS_FRAME_FINISH | DVP_STS_FRAME_FINISH_WE;
+            dvp->sts = DVP_STS_FRAME_FINISH | DVP_STS_FRAME_FINISH_WE;
             return 1;
         }
         vTaskDelay(pdMS_TO_TICKS(1));
@@ -221,11 +237,15 @@ int cam_capture_rgb565(const uint16_t **pixels, int *w, int *h)
 
     int ok = cam_grab();
     if (!ok) {
+        cam_route_dvp_data(0);
+        printf("[cam] route DVP data pads back to LCD\n");
         printf("[cam] capture failed: no DVP frame\n");
         return 0;
     }
 
     memcpy(s_snap, s_fb, sizeof(s_snap));
+    cam_route_dvp_data(0);
+    printf("[cam] route DVP data pads back to LCD\n");
     *pixels = (const uint16_t *)s_snap;
     *w = CAM_W;
     *h = CAM_H;
@@ -239,12 +259,15 @@ void cam_preview_forever(void)
         streaming = cam_grab();
 
     if (!streaming) {
+        cam_route_dvp_data(0);
         printf("[cam] no frames - GC0328 not streaming\n");
         return;
     }
 
     for (;;) {
         cam_grab();
-        lcd_draw_picture(0, 0, CAM_W, CAM_H, s_fb);
+        memcpy(s_snap, s_fb, sizeof(s_snap));
+        cam_route_dvp_data(0);
+        lcd_draw_picture(0, 0, CAM_W, CAM_H, s_snap);
     }
 }
