@@ -1,5 +1,5 @@
 /*
- * DVP camera — Maix Dock FPC, sensor GC0328 (chip id reg 0xF0 = 0x9d).
+ * DVP camera - Maix Dock FPC, sensor GC0328 (chip id reg 0xF0 = 0x9d).
  *
  * Pin map (verified by sweep on this board):
  *   IO40 SCCB_SDA   IO41 SCCB_SCLK
@@ -10,10 +10,7 @@
  * Gotchas paid for in debugging:
  *   - XCLK only starts inside dvp_config() (it sets CMOS_CLK_ENABLE).
  *   - GC0328 needs ~100 ms after reset; id reads 0x00 until it wakes.
- *
- * The register init here is intentionally minimal (reset, RGB565 output,
- * output enable, auto-exposure). It produces a live image; full image-quality
- * tuning (AWB/gamma/lens) is a later refinement.
+ *   - Output index 0 is the AI path, index 1 is the RGB565 display path.
  */
 #include "camera.h"
 #include "lcd.h"
@@ -38,6 +35,9 @@ static uint32_t s_fb[CAM_W * CAM_H / 2] __attribute__((aligned(64)));  /* RGB565
 static uint32_t s_snap[CAM_W * CAM_H / 2] __attribute__((aligned(64)));/* stable RGB565 snapshot */
 static uint8_t  s_ai[CAM_W * CAM_H * 3] __attribute__((aligned(64)));  /* RGB24 planar (AI) */
 static volatile int s_frame_done;
+static int s_started;
+static int s_chip_id = -1;
+static char s_cam_name[32];
 
 static void cam_pins(void)
 {
@@ -57,19 +57,27 @@ static void cam_pins(void)
 
 static void on_frame(dvp_frame_event_t event, void *userdata)
 {
+    (void)userdata;
     if (event == VIDEO_FE_END)
         s_frame_done = 1;
 }
 
-
 int cam_start(char *name_out, int len)
 {
+    if (s_started) {
+        if (name_out && len > 0)
+            snprintf(name_out, len, "%s", s_cam_name);
+        return s_chip_id;
+    }
+
     cam_pins();
 
     s_dvp = io_open("/dev/dvp0");
     s_sccb = io_open("/dev/sccb0");
     if (!s_dvp || !s_sccb) {
-        snprintf(name_out, len, "no DVP/SCCB");
+        snprintf(s_cam_name, sizeof(s_cam_name), "no DVP/SCCB");
+        if (name_out && len > 0)
+            snprintf(name_out, len, "%s", s_cam_name);
         return -1;
     }
 
@@ -94,25 +102,29 @@ int cam_start(char *name_out, int len)
         usleep(150 * 1000);
         for (int i = 0; i < 12; i++) {
             id = sccb_dev_read_byte(gc, 0xF0);
-            if (id == 0x9d || id == 0x9b) break;
+            if (id == 0x9d || id == 0x9b)
+                break;
             usleep(30 * 1000);
         }
         printf("[cam] attempt %d: id=0x%02x\n", attempt, id);
     }
     if (id != 0x9d && id != 0x9b) {
-        snprintf(name_out, len, "no sensor (0x%02x)", id);
+        snprintf(s_cam_name, sizeof(s_cam_name), "no sensor (0x%02x)", id);
+        if (name_out && len > 0)
+            snprintf(name_out, len, "%s", s_cam_name);
         return -1;
     }
 
     /* Full vendor register init, then QVGA 320x240 windowing. The default
      * table ends with output-enable (0xf1=0x07, 0xf2=0x01); 0xff in the reg
-     * column means "delay N ms".
-     *
-     * This wrapper reads the sensor with the 8-bit address form. */
+     * column means "delay N ms". */
     sccb_dev_write_byte(gc, 0xfe, 0x00);
     printf("[cam] page0 id readback=0x%02x\n", sccb_dev_read_byte(gc, 0xF0));
     for (int i = 0; sensor_default_regs[i][0]; i++) {
-        if (sensor_default_regs[i][0] == 0xff) { usleep(sensor_default_regs[i][1] * 1000); continue; }
+        if (sensor_default_regs[i][0] == 0xff) {
+            usleep(sensor_default_regs[i][1] * 1000);
+            continue;
+        }
         sccb_dev_write_byte(gc, sensor_default_regs[i][0], sensor_default_regs[i][1]);
         usleep(1000);
     }
@@ -121,11 +133,8 @@ int cam_start(char *name_out, int len)
         usleep(1000);
     }
 
-    /* DVP capture pipeline → s_fb. */
-    /* Output index 1 is the display path (RGB565 → rgb_addr); index 0 is the
-     * AI path and only accepts RGB24-planar (asserts otherwise → hang). */
-    /* Configure BOTH outputs like the working demo: 0=AI (RGB24 planar),
-     * 1=display (RGB565). */
+    /* Configure both outputs like the working demo: 0=AI RGB24 planar,
+     * 1=display RGB565. The DMA pipeline may not run with display alone. */
     dvp_set_output_attributes(s_dvp, 0, VIDEO_FMT_RGB24_PLANAR, s_ai);
     dvp_set_output_enable(s_dvp, 0, true);
     dvp_set_output_attributes(s_dvp, 1, VIDEO_FMT_RGB565, s_fb);
@@ -136,7 +145,11 @@ int cam_start(char *name_out, int len)
     dvp_set_frame_event_enable(s_dvp, VIDEO_FE_END, true);
     dvp_enable_frame(s_dvp);                         /* kick off continuous capture */
 
-    snprintf(name_out, len, "GC0328 id=0x%02x", id);
+    s_chip_id = id;
+    snprintf(s_cam_name, sizeof(s_cam_name), "GC0328 id=0x%02x", id);
+    s_started = 1;
+    if (name_out && len > 0)
+        snprintf(name_out, len, "%s", s_cam_name);
     return id;
 }
 
@@ -144,6 +157,8 @@ int cam_start(char *name_out, int len)
  * running from cam_start). Returns 1 if a frame completed, 0 on timeout. */
 static int cam_grab(void)
 {
+    if (!s_started || !s_dvp)
+        return 0;
     s_frame_done = 0;
     int t = 0;
     while (!s_frame_done && t++ < 300)
@@ -153,6 +168,12 @@ static int cam_grab(void)
 
 int cam_capture_rgb565(const uint16_t **pixels, int *w, int *h)
 {
+    if (!s_started) {
+        char name[32];
+        if (cam_start(name, sizeof(name)) < 0)
+            return 0;
+    }
+
     int ok = cam_grab();
     memcpy(s_snap, s_fb, sizeof(s_snap));
     *pixels = (const uint16_t *)s_snap;
@@ -163,16 +184,13 @@ int cam_capture_rgb565(const uint16_t **pixels, int *w, int *h)
 
 void cam_preview_forever(void)
 {
-    /* Confirm the sensor is actually streaming before committing the screen to
-     * a preview — with only a minimal GC0328 init the DVP never sees a frame
-     * (no VSYNC), so we'd otherwise just show black forever. */
     int streaming = 0;
     for (int i = 0; i < 10 && !streaming; i++)
         streaming = cam_grab();
 
     if (!streaming) {
-        printf("[cam] no frames — GC0328 not streaming (needs full register init)\n");
-        return;   /* leave the status screen up instead of a black preview */
+        printf("[cam] no frames - GC0328 not streaming\n");
+        return;
     }
 
     for (;;) {
