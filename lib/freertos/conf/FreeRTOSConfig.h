@@ -55,6 +55,7 @@
  *----------------------------------------------------------*/
 
 #include <stdint.h>
+#include <stdio.h>
 
 /* clock */
 #define configCPU_CLOCK_HZ					uxPortGetCPUClock()
@@ -133,11 +134,15 @@ enum
 /* Diagnostics */
 #define configCHECK_FOR_STACK_OVERFLOW          1
 
-/* configASSERT behaviour */
+/* configASSERT behaviour
+ * Diagnostic stack policy: assertions must be visible in UART logs but must not
+ * kill the whole K210 service.  SD probing is allowed to fail, while KSD must
+ * continue and return a command-level error to the PC. */
 extern void vPortFatal(const char* file, int line, const char* message);
-/* Normal assert() semantics without relying on the provision of an assert.h header file. */
-#define configASSERT( x ) if( ( x ) == 0 ) {           \
-    vPortFatal(__FILE__, __LINE__, #x);				   \
-}
+#define configASSERT( x ) do {                                      \
+    if( ( x ) == 0 ) {                                              \
+        printf("[ASSERT] %s:%d %s\r\n", __FILE__, __LINE__, #x);   \
+    }                                                               \
+} while(0)
 
 #endif /* FREERTOS_CONFIG_H */
