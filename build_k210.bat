@@ -32,7 +32,7 @@ if errorlevel 1 (
 if not exist "%BUILD%" mkdir "%BUILD%"
 
 echo [cmake] configuring...
-cmake -S . -B "%BUILD%" -G "MinGW Makefiles" -DCMAKE_MAKE_PROGRAM="%MAKE%" -DTOOLCHAIN="%TC%" -DSDK_ROOT="%SDK%"
+cmake -S . -B "%BUILD%" -G "MinGW Makefiles" -DCMAKE_MAKE_PROGRAM="%MAKE%" -DTOOLCHAIN="%TC%" -DSDK_ROOT="%SDK%" -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 if errorlevel 1 (
   echo ERROR: cmake configure failed
   exit /b 1
