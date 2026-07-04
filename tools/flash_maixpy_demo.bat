@@ -7,42 +7,49 @@ if "%PORT%"=="" set "PORT=COM12"
 set "IMAGE=%~2"
 set "KFLASH_BAUD=1500000"
 
-if "%IMAGE%"=="" (
-  echo [maixpy] No image path provided. Searching local tree...
-  set "COUNT=0"
-  set "CAND="
-  for /f "delims=" %%F in ('py -3 -c "from pathlib import Path; exts={'.bin','.kfpkg'}; skip={'.git','build','.pio'}; hits=[]; root=Path('.');
-for p in root.rglob('*'):
-    if any(x in p.parts for x in skip):
-        continue
-    if p.is_file() and p.suffix.lower() in exts:
-        s=str(p).lower()
-        if any(k in s for k in ['maix','micropython','mpy','demo']):
-            hits.append(p)
-for p in hits:
-    print(p)"') do (
-    set /a COUNT+=1
-    set "CAND=%%F"
-    echo   !COUNT!^) %%F
-  )
-  if "!COUNT!"=="0" (
-    echo.
-    echo ERROR: no MaixPy/MicroPython .bin/.kfpkg image found in this repo checkout.
-    echo Put the demo firmware here, for example:
-    echo   firmware\maixpy\maixpy.bin
-    echo Then run:
-    echo   tools\flash_maixpy_demo.bat %PORT% firmware\maixpy\maixpy.bin
-    exit /b 1
-  )
-  if not "!COUNT!"=="1" (
-    echo.
-    echo ERROR: more than one candidate found. Run again with the exact image path:
-    echo   tools\flash_maixpy_demo.bat %PORT% path\to\maixpy.bin
-    exit /b 1
-  )
-  set "IMAGE=!CAND!"
+if not "%IMAGE%"=="" goto image_ready
+
+echo [maixpy] No image path provided. Searching local tree...
+set "COUNT=0"
+set "CAND="
+for /f "delims=" %%F in ('dir /b /s *.bin *.kfpkg 2^>nul') do call :consider "%%F"
+
+if "%COUNT%"=="0" (
+  echo.
+  echo ERROR: no MaixPy/MicroPython .bin/.kfpkg image found in this repo checkout.
+  echo Put the demo firmware here, for example:
+  echo   firmware\maixpy\maixpy.bin
+  echo Then run:
+  echo   tools\flash_maixpy_demo.bat %PORT% firmware\maixpy\maixpy.bin
+  exit /b 1
 )
 
+if not "%COUNT%"=="1" (
+  echo.
+  echo ERROR: more than one candidate found. Run again with the exact image path:
+  echo   tools\flash_maixpy_demo.bat %PORT% path\to\maixpy.bin
+  exit /b 1
+)
+
+set "IMAGE=%CAND%"
+goto image_ready
+
+:consider
+set "F=%~1"
+set "FL=!F!"
+set "MATCH=0"
+echo !FL! | findstr /i /c:"maix" >nul && set "MATCH=1"
+echo !FL! | findstr /i /c:"micropython" >nul && set "MATCH=1"
+echo !FL! | findstr /i /c:"mpy" >nul && set "MATCH=1"
+echo !FL! | findstr /i /c:"demo" >nul && set "MATCH=1"
+if "!MATCH!"=="1" (
+  set /a COUNT+=1
+  set "CAND=!F!"
+  echo   !COUNT!^) !F!
+)
+exit /b 0
+
+:image_ready
 if not exist "%IMAGE%" (
   echo ERROR: image not found: %IMAGE%
   exit /b 1
