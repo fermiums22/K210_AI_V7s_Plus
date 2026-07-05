@@ -71,10 +71,4 @@ t = t.replace('if (strcmp(line, "SD_TEST") == 0) { sd_test_command(); continue; 
 t = t.replace('if (strcmp(line, "SD_RAW") == 0) { sd_raw_command(); continue; }', 'if (strcmp(line, "SD_RAW") == 0) { sd_raw_command(); host_puts("KSD:DONE\\n"); return true; }')
 u.write_text(t, encoding='utf-8', newline='\n')
 
-p = root / 'src/sd.c'
-z = p.read_text(encoding='utf-8')
-z = z.replace('''    handle_t dev = spi_get_device(spi, SPI_MODE_0, SPI_FF_STANDARD, 1, 8);''', '''    handle_t dev = spi_get_device(spi, SPI_MODE_0, SPI_FF_STANDARD, 2, 8);''')
-z = z.replace('''    LOG("[sdraw] raw full-duplex CMD0 probe begin");''', '''    LOG("[sdraw] raw full-duplex CMD0 probe begin mask=2");''')
-p.write_text(z, encoding='utf-8', newline='\n')
-
-print('SDCARD_SOURCE_PROBE_PATCH_OK zero_cardinfo=1 cmd_logs=1 no_throw=1 sd_raw_mask=2 done=1')
+print('SDCARD_SOURCE_PROBE_PATCH_OK zero_cardinfo=1 cmd_logs=1 no_throw=1 sd_raw_mask=1 done=1')
