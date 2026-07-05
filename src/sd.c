@@ -7,7 +7,6 @@
 #include "sd.h"
 #include "pinout.h"
 #include "log.h"
-#include "k210_maixpy_sd_port.h"
 
 #include <FreeRTOS.h>
 #include <task.h>
@@ -18,9 +17,9 @@
 #include <ff.h>
 #include <string.h>
 
-#define SD_MOUNT_ATTEMPTS        8u
+#define SD_MOUNT_ATTEMPTS        1u
 #define SD_POWERUP_DELAY_MS      1500u
-#define SD_MOUNT_REINIT_DELAY_MS 500u
+#define SD_MOUNT_REINIT_DELAY_MS 1u
 
 static handle_t s_spi;
 static handle_t s_gpio;
@@ -75,18 +74,9 @@ static handle_t sd_driver_open_once(void)
 {
     sd_powerup_wait_once();
 
-    /*
-     * First prove the real low-level milestone through the clean MaixPy /
-     * Kendryte-style backend.  If CMD0 still returns 0xff, do not continue into
-     * FatFs or ESP-related paths; they are downstream from the missing SPI-mode
-     * SD response.
-     */
-    uint8_t cmd0 = k210_maixpy_sd_probe_cmd0();
-    if (cmd0 != 0x01u) {
-        LOGF("[sd] lowlevel CMD0 failed r=%02x", (unsigned int)cmd0);
-        return 0;
-    }
-
+    /* Fast path: this is the previously verified K210 SDK storage route that
+     * mounted and listed SD root entries.  Do not add a separate raw-CMD0 gate
+     * in front of it: the storage driver already logs CMD0/CMD8/ACMD41/CMD58. */
     sd_pinmux();
 
     s_spi = io_open("/dev/spi1");
