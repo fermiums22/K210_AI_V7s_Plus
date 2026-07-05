@@ -104,9 +104,11 @@ def replace_function(text: str, signature: str, replacement: str) -> str:
 
 
 s = P.read_text(encoding="utf-8")
+if "#include <spi.h>" not in s:
+    s = s.replace("#include <hal.h>\n", "#include <hal.h>\n#include <spi.h>\n#include <sysctl.h>\n", 1)
 s = replace_function(s, "    void sd_write_data(const uint8_t *data_buff, size_t length)", RAW_SPI_BLOCK)
 s = replace_function(s, "    void sd_read_data(uint8_t *data_buff, size_t length)", READ_DATA)
 s = replace_function(s, "    void sd_read_data_dma(uint8_t *data_buff)", READ_DATA_DMA)
 P.write_text(s, encoding="utf-8", newline="\n")
 print("patched:   lib/drivers/src/storage/sdcard.cpp")
-print("SDCARD_RAW_SPI_PATCH_OK spi1_registers=1 byte_xfer=1 cs_mask=2")
+print("SDCARD_RAW_SPI_PATCH_OK spi1_registers=1 byte_xfer=1 cs_mask=2 includes=hal_spi_sysctl")
