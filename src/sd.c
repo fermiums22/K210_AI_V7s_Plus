@@ -14,6 +14,7 @@
 #include <filesystem.h>
 #include <storage/sdcard.h>
 #include <fpioa.h>
+#include <sysctl.h>
 #include <ff.h>
 #include <string.h>
 
@@ -47,10 +48,16 @@ static void sd_powerup_wait_once(void)
 
 static void sd_pinmux(void)
 {
+    /* LCD init enables the SPI0->DVP octal data route.  On this board those
+     * shared pads overlap the SD wiring area, so force the shared data mux away
+     * from LCD before asking SPI1 to talk to the card. */
+    sysctl_set_spi0_dvp_data(0);
+
     fpioa_set_function(PIN_SD_MISO, FUNC_SPI1_D1);
     fpioa_set_function(PIN_SD_CLK,  FUNC_SPI1_SCLK);
     fpioa_set_function(PIN_SD_MOSI, FUNC_SPI1_D0);
     fpioa_set_function(PIN_SD_CS,   FUNC_GPIOHS0 + GPIOHS_SD_CS);
+    LOG("[sd] SD pinmux SPI1+DVPmux0");
 }
 
 static void sd_driver_drop(void)
@@ -74,9 +81,6 @@ static handle_t sd_driver_open_once(void)
 {
     sd_powerup_wait_once();
 
-    /* Fast path: this is the previously verified K210 SDK storage route that
-     * mounted and listed SD root entries.  Do not add a separate raw-CMD0 gate
-     * in front of it: the storage driver already logs CMD0/CMD8/ACMD41/CMD58. */
     sd_pinmux();
 
     s_spi = io_open("/dev/spi1");
@@ -94,7 +98,7 @@ static handle_t sd_driver_open_once(void)
         return 0;
     }
 
-    LOG("[sd] card driver ready");
+    LOG("[sd] card driver handle ready");
     return s_sd;
 }
 
