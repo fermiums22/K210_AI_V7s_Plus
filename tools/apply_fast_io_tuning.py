@@ -149,9 +149,9 @@ SEND_FILE_RAW_FATFS = r'''static bool send_file_raw(const char *rel_path)
 SD_PINMUX = r'''static void sd_pinmux(void)
 {
     sysctl_set_spi0_dvp_data(0);
-    fpioa_set_function(PIN_SD_MOSI, FUNC_SPI1_D0);
     fpioa_set_function(PIN_SD_MISO, FUNC_SPI1_D1);
     fpioa_set_function(PIN_SD_CLK,  FUNC_SPI1_SCLK);
+    fpioa_set_function(PIN_SD_MOSI, FUNC_SPI1_D0);
     fpioa_set_function(PIN_SD_CS,   FUNC_GPIOHS0 + GPIOHS_SD_CS);
 }'''
 
@@ -195,6 +195,7 @@ SD_MOUNT_ONCE = r'''bool sd_mount(void)
     int r = filesystem_mount("/fs/0/", sd);
     if (r != 0) {
         LOGF("[sd] mount rc=%d", r);
+        sd_driver_drop();
         return false;
     }
 
@@ -259,23 +260,14 @@ def patch_file(path: Path, edits: list[tuple[str, str, str]]) -> bool:
 
 def patch_main_boot_order(path: Path) -> None:
     old = path.read_text(encoding="utf-8")
-    needle = '''    amp_init();
-    amp_set(false);
-    ok("Audio AMP off");
-
-    lcd_init();'''
-    repl = '''    amp_init();
-    amp_set(false);
-    ok("Audio AMP off");
-
-    if (sd_mount())
+    new = old
+    new = new.replace('''    if (sd_mount())
         ok("SD init before LCD");
     else
         LOG("[ERR] SD init before LCD failed");
 
-    lcd_init();'''
-    new = old.replace(needle, repl, 1)
-    new = new.replace('    ok("SD mount deferred");\n', '    ok("SD init checked before LCD");\n', 1)
+''', '', 1)
+    new = new.replace('    ok("SD init checked before LCD");\n', '    ok("SD mount deferred");\n', 1)
     if new == old:
         print(f"unchanged: {path.relative_to(ROOT)}")
     else:
@@ -353,7 +345,7 @@ def main() -> int:
         "FAST_IO_TUNING_OK "
         f"ksd_buf={args.ksd_buf} ksd_stack={args.ksd_stack} "
         f"esp_baud={args.esp_baud} esp_block={args.esp_block} "
-        "ksd_io=fatfs sd_init=before-lcd shared-bus-claim"
+        "ksd_io=fatfs sd_init=lazy-shared-bus-dropbad"
     )
     return 0
 
