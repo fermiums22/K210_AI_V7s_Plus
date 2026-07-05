@@ -14,6 +14,22 @@ except Exception as exc:
     raise SystemExit(2)
 
 
+TERMINAL_PREFIXES = (
+    "KSD:CAPTURE_OK", "KSD:CAPTURE_FAIL",
+    "KSD:FLASH_OK", "KSD:FLASH_FAIL",
+    "KSD:FORMAT_OK", "KSD:FORMAT_FAIL",
+    "KSD:HELP_END",
+    "KSD:TEST_END",
+    "KSD:LCD_OK",
+    "KSD:AMP_OK",
+    "KSD:SD_OK", "KSD:SD_FAIL",
+    "KSD:CAM_OK", "KSD:CAM_FAIL",
+    "KSD:MIC_SKIP",
+    "KSD:RUNSPI",
+    "KSD:ERR",
+)
+
+
 def open_port(port: str, baud: int) -> serial.Serial:
     deadline = time.monotonic() + 10.0
     last = None
@@ -65,7 +81,7 @@ def connect(ser: serial.Serial, timeout_s: float) -> None:
     ser.reset_input_buffer()
     deadline = time.monotonic() + timeout_s
     next_magic = 0.0
-    print(f"[ksd] connecting for up to {timeout_s:.1f}s; reset K210 now if needed")
+    print(f"[ksd] connecting for up to {timeout_s:.1f}s")
     while time.monotonic() < deadline:
         now = time.monotonic()
         if now >= next_magic:
@@ -79,7 +95,7 @@ def connect(ser: serial.Serial, timeout_s: float) -> None:
         if line == "KSD:HELLO":
             print("[ksd] connected")
             return
-    raise SystemExit("ERROR: KSD connect timeout; press RESET on K210 and rerun")
+    raise SystemExit("ERROR: KSD connect timeout")
 
 
 def wait_cmd_prompt(ser: serial.Serial) -> None:
@@ -108,17 +124,11 @@ def run_simple_command(ser: serial.Serial, cmd: str) -> list[str]:
     ser.write((cmd + "\n").encode("ascii"))
     ser.flush()
     lines: list[str] = []
-    deadline = time.monotonic() + 30.0
+    deadline = time.monotonic() + 45.0
     while time.monotonic() < deadline:
         line = read_ksd_line(ser, max(0.2, deadline - time.monotonic()))
         lines.append(line)
-        if line.startswith("KSD:CAPTURE_OK") or line.startswith("KSD:CAPTURE_FAIL"):
-            return lines
-        if line.startswith("KSD:FLASH_OK") or line.startswith("KSD:FLASH_FAIL"):
-            return lines
-        if line.startswith("KSD:FORMAT_OK") or line.startswith("KSD:FORMAT_FAIL"):
-            return lines
-        if line.startswith("KSD:ERR"):
+        if line.startswith(TERMINAL_PREFIXES):
             return lines
     raise TimeoutError(f"command timeout: {cmd}")
 
@@ -155,7 +165,7 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="K210 KSD UART command client")
     ap.add_argument("--port", default="COM12")
     ap.add_argument("--baud", type=int, default=921600)
-    ap.add_argument("--cmd", required=True, help="Command, e.g. 'CAM_CAPTURE cam/capture.rgb565'")
+    ap.add_argument("--cmd", required=True, help="Command, e.g. SELFTEST or CAM_CAPTURE capture.rgb565")
     ap.add_argument("--get", dest="get_path", help="Optional remote file to GET after command")
     ap.add_argument("--out", default="logs/ksd_get.bin", help="Local output path for --get")
     ap.add_argument("--connect-timeout", type=float, default=20.0)
