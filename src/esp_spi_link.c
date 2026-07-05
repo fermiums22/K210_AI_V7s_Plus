@@ -3,22 +3,48 @@
 #include "log.h"
 #include "amp.h"
 #include "esp_uart_log.h"
+#include "sd.h"
 
 #include <FreeRTOS.h>
 #include <task.h>
 #include <devices.h>
 #include <fpioa.h>
 #include <platform.h>
+#include <filesystem.h>
+#include <ff.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
-#define FRAME_MAGIC     0x5053454bu /* bytes on wire: 4b 45 53 50 == "KESP" */
-#define RX_MAX          64
-#define TEST_WARMUP     3u
-#define TEST_FRAMES     64u
-#define GPIOHS_CS       0
-#define GPIOHS_BIT(n)   (1u << (n))
-#define FUNC_GPIOHS_NUM(n) ((fpioa_function_t)(24 + (n)))
+#define FRAME_MAGIC          0x5053454bu /* bytes on wire: 4b 45 53 50 == "KESP" */
+#define RX_MAX               96
+#define KESP_FRAME_BYTES     64
+#define KESP_PAYLOAD_BYTES   40
+#define TEST_WARMUP          2u
+#define TEST_FRAMES          24u
+#define GPIOHS_CS            0
+#define GPIOHS_BIT(n)        (1u << (n))
+#define FUNC_GPIOHS_NUM(n)   ((fpioa_function_t)(24 + (n)))
+
+enum {
+    KESP_F_IDLE  = 1,
+    KESP_F_BEGIN = 2,
+    KESP_F_DATA  = 3,
+    KESP_F_END   = 4,
+    KESP_F_ERROR = 5,
+};
+
+typedef struct {
+    uint32_t magic;
+    uint8_t version;
+    uint8_t type;
+    uint16_t len;
+    uint32_t seq;
+    uint32_t total;
+    uint32_t offset;
+    uint32_t reserved;
+    uint8_t payload[KESP_PAYLOAD_BYTES];
+} kesp_frame_t;
 
 typedef struct {
     volatile uint32_t input_val;
@@ -51,6 +77,15 @@ typedef struct {
     int last_magic_off;
 } spi_case_t;
 
+typedef struct {
+    handle_t f;
+    char name[48];
+    char rel_path[80];
+    uint32_t expected;
+    uint32_t written;
+    uint32_t frames;
+} file_rx_t;
+
 static gpiohs_regs_t *const GPIOHS = (gpiohs_regs_t *)GPIOHS_BASE_ADDR;
 static handle_t s_spi;
 static handle_t s_dev;
@@ -67,7 +102,7 @@ void esp_spi_link_pause(int pause)
     s_pause = pause ? 1 : 0;
     if (s_pause)
         s_restart_after_pause = 1;
-    LOGF("[pure-spi] pause=%d", s_pause);
+    LOGF("[wifi-sd] pause=%d", s_pause);
 }
 
 static int wait_if_paused(const char *where)
@@ -75,13 +110,13 @@ static int wait_if_paused(const char *where)
     if (!s_pause)
         return 0;
 
-    LOGF("[pure-spi] paused at %s", where);
+    LOGF("[wifi-sd] paused at %s", where);
     s_restart_after_pause = 1;
     while (s_pause) {
         amp_set(false);
         vTaskDelay(pdMS_TO_TICKS(20));
     }
-    LOG("[pure-spi] resumed; restart from ESP-ready wait");
+    LOG("[wifi-sd] resumed; restart from ESP-ready wait");
     return 1;
 }
 
@@ -102,6 +137,19 @@ static int find_magic(const uint8_t *rx, int len)
             return off;
     }
     return -1;
+}
+
+static int decode_frame(const uint8_t *rx, int len, kesp_frame_t *out, int *magic_off)
+{
+    int off = find_magic(rx, len);
+    if (magic_off)
+        *magic_off = off;
+    if (off < 0 || off + (int)sizeof(kesp_frame_t) > len)
+        return 0;
+    memcpy(out, rx + off, sizeof(*out));
+    if (out->magic != FRAME_MAGIC || out->version != 1 || out->len > KESP_PAYLOAD_BYTES)
+        return 0;
+    return 1;
 }
 
 static const char *cs_name(int manual_cs)
@@ -132,7 +180,7 @@ static void gpiohs_cs_init(void)
     GPIOHS->pue &= ~bit;
     GPIOHS->input_en &= ~bit;
     GPIOHS->output_en |= bit;
-    gpiohs_cs_write(1); /* ESP8266 SPISlave CS is active-low. */
+    gpiohs_cs_write(1); /* ESP8266 HSPI slave CS is active-low. */
 }
 
 static void map_spi_pins(int swap_d0_d1, int manual_cs)
@@ -181,7 +229,6 @@ static void fill_tx(uint32_t seq, int len)
     memset(s_tx, 0, sizeof(s_tx));
     for (int i = 0; i < len && i < RX_MAX; i++)
         s_tx[i] = (uint8_t)(0x80u + ((seq + (uint32_t)i) & 0x3fu));
-
     if (len >= 4) {
         s_tx[0] = 0x11;
         s_tx[1] = 0x22;
@@ -206,24 +253,6 @@ static int transfer_once(const spi_case_t *c, uint32_t seq)
     return r;
 }
 
-static void log_sample(const spi_case_t *c, int r, int off)
-{
-    LOGF("[pure-spi] sample mode=%d hz=%lu cs=%s map=%s len=%d r=%d off=%d rx=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x m0=%08lx m1=%08lx m2=%08lx",
-         c->mode,
-         (unsigned long)c->hz,
-         cs_name(c->manual_cs),
-         map_name(c->swap_d0_d1),
-         c->wire_len,
-         r,
-         off,
-         s_rx[0], s_rx[1], s_rx[2], s_rx[3],
-         s_rx[4], s_rx[5], s_rx[6], s_rx[7],
-         s_rx[8], s_rx[9], s_rx[10], s_rx[11],
-         (unsigned long)rd32le(s_rx + 0),
-         (unsigned long)rd32le(s_rx + 1),
-         (unsigned long)rd32le(s_rx + 2));
-}
-
 static void remember_best(const spi_case_t *c)
 {
     if (!s_have_best || c->good > s_best.good ||
@@ -235,31 +264,33 @@ static void remember_best(const spi_case_t *c)
 
 static spi_case_t run_case(spi_case_t c)
 {
+    kesp_frame_t f;
     open_spi_case(&c);
     c.good = 0;
     c.bad = 0;
     c.last_magic_off = -1;
 
-    LOGF("[pure-spi] case start mode=%d hz=%lu cs=%s map=%s len=%d",
-         c.mode,
-         (unsigned long)c.hz,
-         cs_name(c.manual_cs),
-         map_name(c.swap_d0_d1),
-         c.wire_len);
+    LOGF("[wifi-sd] scan case mode=%d hz=%lu cs=%s map=%s len=%d",
+         c.mode, (unsigned long)c.hz, cs_name(c.manual_cs), map_name(c.swap_d0_d1), c.wire_len);
 
     for (uint32_t i = 0; i < TEST_WARMUP + TEST_FRAMES; i++) {
-        if (wait_if_paused("case"))
+        if (wait_if_paused("scan"))
             return c;
 
         amp_set(false);
         int r = transfer_once(&c, i);
-        int off = find_magic(s_rx, r > c.wire_len ? c.wire_len : r);
+        int off = -1;
+        int ok = decode_frame(s_rx, r > c.wire_len ? c.wire_len : r, &f, &off);
 
-        if (i == TEST_WARMUP)
-            log_sample(&c, r, off);
+        if (i == TEST_WARMUP) {
+            LOGF("[wifi-sd] sample mode=%d hz=%lu cs=%s map=%s len=%d r=%d off=%d rx=%02x %02x %02x %02x type=%u seq=%lu",
+                 c.mode, (unsigned long)c.hz, cs_name(c.manual_cs), map_name(c.swap_d0_d1),
+                 c.wire_len, r, off, s_rx[0], s_rx[1], s_rx[2], s_rx[3], ok ? f.type : 0,
+                 ok ? (unsigned long)f.seq : 0u);
+        }
 
         if (i >= TEST_WARMUP) {
-            if (r >= c.wire_len && off >= 0) {
+            if (r >= c.wire_len && ok) {
                 c.good++;
                 c.last_magic_off = off;
             } else {
@@ -269,15 +300,9 @@ static spi_case_t run_case(spi_case_t c)
         vTaskDelay(pdMS_TO_TICKS(2));
     }
 
-    LOGF("[pure-spi] case done mode=%d hz=%lu cs=%s map=%s len=%d good=%lu bad=%lu last_off=%d",
-         c.mode,
-         (unsigned long)c.hz,
-         cs_name(c.manual_cs),
-         map_name(c.swap_d0_d1),
-         c.wire_len,
-         (unsigned long)c.good,
-         (unsigned long)c.bad,
-         c.last_magic_off);
+    LOGF("[wifi-sd] scan done mode=%d hz=%lu cs=%s map=%s len=%d good=%lu bad=%lu off=%d",
+         c.mode, (unsigned long)c.hz, cs_name(c.manual_cs), map_name(c.swap_d0_d1), c.wire_len,
+         (unsigned long)c.good, (unsigned long)c.bad, c.last_magic_off);
 
     if (c.good)
         remember_best(&c);
@@ -288,12 +313,12 @@ static spi_case_t run_case(spi_case_t c)
 
 static void run_scan(void)
 {
-    static const uint32_t hz_list[] = { 100000u, 500000u, 1000000u };
-    static const int len_list[] = { 32, 34 };
+    static const uint32_t hz_list[] = { 500000u, 1000000u, 2000000u, 4000000u };
+    static const int len_list[] = { 64, 66, 68, 72 };
 
     s_have_best = 0;
     memset(&s_best, 0, sizeof(s_best));
-    LOG("[pure-spi] scan start: mode 0/1/2/3, normal/swap D0D1, hw/gpiohs CS, 32/34-byte transfers");
+    LOG("[wifi-sd] scan start: ESP HSPI KESP frame, find mode/map/cs/length");
 
     for (int manual_cs = 0; manual_cs <= 1; manual_cs++) {
         for (int swap = 0; swap <= 1; swap++) {
@@ -320,57 +345,173 @@ static void run_scan(void)
         return;
 
     if (s_have_best) {
-        LOGF("[pure-spi] VERDICT SPI_OK best mode=%d hz=%lu cs=%s map=%s len=%d good=%lu bad=%lu off=%d",
-             s_best.mode,
-             (unsigned long)s_best.hz,
-             cs_name(s_best.manual_cs),
-             map_name(s_best.swap_d0_d1),
-             s_best.wire_len,
-             (unsigned long)s_best.good,
-             (unsigned long)s_best.bad,
-             s_best.last_magic_off);
+        LOGF("[wifi-sd] VERDICT SPI_OK best mode=%d hz=%lu cs=%s map=%s len=%d good=%lu bad=%lu off=%d",
+             s_best.mode, (unsigned long)s_best.hz, cs_name(s_best.manual_cs), map_name(s_best.swap_d0_d1),
+             s_best.wire_len, (unsigned long)s_best.good, (unsigned long)s_best.bad, s_best.last_magic_off);
     } else {
-        LOG("[pure-spi] VERDICT SPI_FAIL no KESP magic in any tested mode/map/cs/length");
-        LOG("[pure-spi] If ESP UART rx counter increases but K210 sees no magic, suspect ESP8266 SPISlave protocol/alignment, not physical pins");
+        LOG("[wifi-sd] VERDICT SPI_FAIL no full KESP frame in any tested mode/map/cs/length");
     }
 }
 
-static void run_best_forever(void)
+static int safe_file_name(const char *s)
 {
-    uint32_t good = 0;
-    uint32_t bad = 0;
-    TickType_t last = xTaskGetTickCount();
+    if (!s[0])
+        return 0;
+    for (const char *p = s; *p; p++) {
+        char c = *p;
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.'))
+            return 0;
+    }
+    return 1;
+}
 
+static void rx_close(file_rx_t *rx)
+{
+    if (rx->f) {
+        filesystem_file_close(rx->f);
+        rx->f = 0;
+    }
+}
+
+static int rx_begin(file_rx_t *rx, const kesp_frame_t *f)
+{
+    char fs_path[128];
+    char fat_path[128];
+    char name[sizeof(rx->name)];
+    uint32_t n = f->len;
+    if (n >= sizeof(name))
+        n = sizeof(name) - 1;
+    memcpy(name, f->payload, n);
+    name[n] = 0;
+
+    rx_close(rx);
+    memset(rx, 0, sizeof(*rx));
+
+    if (!safe_file_name(name)) {
+        LOGF("[wifi-sd] BEGIN bad filename '%s'", name);
+        return 0;
+    }
+    if (!sd_mount()) {
+        LOG("[wifi-sd] BEGIN sd_mount failed");
+        return 0;
+    }
+
+    snprintf(rx->name, sizeof(rx->name), "%s", name);
+    snprintf(rx->rel_path, sizeof(rx->rel_path), "wifi/%s", name);
+    snprintf(fs_path, sizeof(fs_path), "/fs/0/%s", rx->rel_path);
+    snprintf(fat_path, sizeof(fat_path), "0:/%s", rx->rel_path);
+    f_mkdir("0:/wifi");
+    f_unlink(fat_path);
+
+    rx->f = filesystem_file_open(fs_path, FILE_ACCESS_WRITE, FILE_MODE_CREATE_ALWAYS);
+    if (!rx->f) {
+        LOGF("[wifi-sd] BEGIN open failed %s", fs_path);
+        return 0;
+    }
+    rx->expected = f->total;
+    rx->written = 0;
+    rx->frames = 0;
+    LOGF("[wifi-sd] BEGIN file=%s size=%lu seq=%lu", rx->rel_path,
+         (unsigned long)rx->expected, (unsigned long)f->seq);
+    return 1;
+}
+
+static int rx_data(file_rx_t *rx, const kesp_frame_t *f)
+{
+    if (!rx->f) {
+        LOGF("[wifi-sd] DATA without open seq=%lu", (unsigned long)f->seq);
+        return 0;
+    }
+    if (f->offset != rx->written) {
+        LOGF("[wifi-sd] DATA offset mismatch got=%lu expected=%lu seq=%lu",
+             (unsigned long)f->offset, (unsigned long)rx->written, (unsigned long)f->seq);
+        rx_close(rx);
+        return 0;
+    }
+    if (f->len == 0 || f->len > KESP_PAYLOAD_BYTES || rx->written + f->len > rx->expected) {
+        LOGF("[wifi-sd] DATA bad len=%u written=%lu total=%lu seq=%lu", f->len,
+             (unsigned long)rx->written, (unsigned long)rx->expected, (unsigned long)f->seq);
+        rx_close(rx);
+        return 0;
+    }
+    int wr = filesystem_file_write(rx->f, f->payload, f->len);
+    if (wr != (int)f->len) {
+        LOGF("[wifi-sd] DATA write failed len=%u wr=%d", f->len, wr);
+        rx_close(rx);
+        return 0;
+    }
+    rx->written += f->len;
+    rx->frames++;
+    if ((rx->written % (16u * 1024u)) == 0 || rx->written == rx->expected)
+        LOGF("[wifi-sd] DATA progress %lu/%lu frames=%lu", (unsigned long)rx->written,
+             (unsigned long)rx->expected, (unsigned long)rx->frames);
+    return 1;
+}
+
+static int rx_end(file_rx_t *rx, const kesp_frame_t *f)
+{
+    (void)f;
+    if (!rx->f) {
+        LOG("[wifi-sd] END without open");
+        return 0;
+    }
+    rx_close(rx);
+    if (rx->written != rx->expected) {
+        LOGF("[wifi-sd] WIFI_SD_FAIL %s written=%lu expected=%lu", rx->rel_path,
+             (unsigned long)rx->written, (unsigned long)rx->expected);
+        return 0;
+    }
+    LOGF("[wifi-sd] WIFI_SD_OK %s %lu bytes frames=%lu", rx->rel_path,
+         (unsigned long)rx->written, (unsigned long)rx->frames);
+    return 1;
+}
+
+static void run_receiver_forever(void)
+{
+    file_rx_t rx;
+    uint32_t seq = 0;
+    uint32_t frames = 0;
+    uint32_t idle = 0;
+    memset(&rx, 0, sizeof(rx));
     open_spi_case(&s_best);
-    LOG("[pure-spi] stability loop on best case");
+    LOG("[wifi-sd] receiver loop start");
 
     for (;;) {
-        if (wait_if_paused("stable-loop"))
+        if (wait_if_paused("receiver")) {
+            rx_close(&rx);
             return;
+        }
 
         amp_set(false);
-        int r = transfer_once(&s_best, good + bad);
-        int off = find_magic(s_rx, r > s_best.wire_len ? s_best.wire_len : r);
-        if (r >= s_best.wire_len && off >= 0)
-            good++;
-        else
-            bad++;
-
-        TickType_t now = xTaskGetTickCount();
-        if (now - last >= pdMS_TO_TICKS(1000)) {
-            last = now;
-            LOGF("[pure-spi] stable mode=%d hz=%lu cs=%s map=%s len=%d good=%lu bad=%lu last_off=%d rx0=%02x %02x %02x %02x",
-                 s_best.mode,
-                 (unsigned long)s_best.hz,
-                 cs_name(s_best.manual_cs),
-                 map_name(s_best.swap_d0_d1),
-                 s_best.wire_len,
-                 (unsigned long)good,
-                 (unsigned long)bad,
-                 off,
-                 s_rx[0], s_rx[1], s_rx[2], s_rx[3]);
+        int r = transfer_once(&s_best, seq++);
+        kesp_frame_t f;
+        int off = -1;
+        if (!decode_frame(s_rx, r > s_best.wire_len ? s_best.wire_len : r, &f, &off)) {
+            idle++;
+            if ((idle % 1000u) == 0)
+                LOGF("[wifi-sd] receiver idle=%lu r=%d rx0=%02x %02x %02x %02x",
+                     (unsigned long)idle, r, s_rx[0], s_rx[1], s_rx[2], s_rx[3]);
+            vTaskDelay(pdMS_TO_TICKS(1));
+            continue;
         }
-        vTaskDelay(pdMS_TO_TICKS(10));
+        idle = 0;
+        frames++;
+        if (f.type == KESP_F_BEGIN) {
+            (void)rx_begin(&rx, &f);
+        } else if (f.type == KESP_F_DATA) {
+            (void)rx_data(&rx, &f);
+        } else if (f.type == KESP_F_END) {
+            (void)rx_end(&rx, &f);
+        } else if (f.type == KESP_F_ERROR) {
+            LOGF("[wifi-sd] ESP_ERROR seq=%lu msg=%.*s", (unsigned long)f.seq, f.len, f.payload);
+            rx_close(&rx);
+        } else if (f.type != KESP_F_IDLE) {
+            LOGF("[wifi-sd] unknown frame type=%u seq=%lu off=%d", f.type, (unsigned long)f.seq, off);
+        }
+        if ((frames % 512u) == 0)
+            LOGF("[wifi-sd] receiver frames=%lu last_type=%u", (unsigned long)frames, f.type);
+        vTaskDelay(pdMS_TO_TICKS(1));
     }
 }
 
@@ -380,7 +521,7 @@ void esp_spi_link_run_forever(void)
         amp_set(false);
         s_restart_after_pause = 0;
 
-        LOG("[pure-spi] waiting ESP UART marker: kesp: spi slave ready");
+        LOG("[wifi-sd] waiting ESP UART marker: kesp: spi slave ready");
         while (!esp_uart_log_spi_ready()) {
             wait_if_paused("wait-ready");
             amp_set(false);
@@ -390,14 +531,14 @@ void esp_spi_link_run_forever(void)
         if (s_restart_after_pause)
             continue;
 
-        LOG("[pure-spi] ESP marker detected, start pure SPI peripheral scan");
+        LOG("[wifi-sd] ESP marker detected, scan SPI link");
         run_scan();
 
         if (s_restart_after_pause)
             continue;
 
         if (s_have_best)
-            run_best_forever();
+            run_receiver_forever();
         else
             vTaskDelay(pdMS_TO_TICKS(1000));
     }
@@ -412,11 +553,11 @@ static void esp_spi_link_task(void *arg)
 void esp_spi_link_start(void)
 {
     if (s_started) {
-        LOG("[pure-spi] scanner task already running");
+        LOG("[wifi-sd] receiver task already running");
         return;
     }
 
     s_started = 1;
     xTaskCreate(esp_spi_link_task, "esp_spi", 4096, NULL, tskIDLE_PRIORITY + 1, NULL);
-    LOG("[pure-spi] scanner task started");
+    LOG("[wifi-sd] receiver task started");
 }
