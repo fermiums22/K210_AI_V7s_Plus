@@ -15,6 +15,7 @@
 #include "storage/sdcard.h"
 #include <hal.h>
 #include <kernel/driver_impl.hpp>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -50,7 +51,7 @@ using namespace sys;
 #define SD_CMD59 59 /*!< CMD59 = 0x59 */
 
 #define SD_SPI_LOW_CLOCK_RATE 200000U
-#define SD_SPI_HIGH_CLOCK_RATE 40000000U
+#define SD_SPI_HIGH_CLOCK_RATE 8000000U
 #define SPI_SLAVE_SELECT 3
 
 /** 
@@ -149,7 +150,12 @@ public:
         cs_gpio_->set_pin_value(cs_gpio_pin_, GPIO_PV_HIGH);
 
         spi8_dev_->set_clock_rate(SD_SPI_LOW_CLOCK_RATE);
-        configASSERT(sd_init() == 0);
+        int init_rc = sd_init();
+        init_ok_ = init_rc == 0;
+        printf("[sdcard] init rc=%d capacity=%llu block=%lu\n",
+               init_rc,
+               (unsigned long long)card_info_.CardCapacity,
+               (unsigned long)card_info_.CardBlockSize);
     }
 
     virtual void on_last_close() override
@@ -160,27 +166,39 @@ public:
 
     virtual uint32_t get_rw_block_size() override
     {
+        if (!init_ok_)
+            return 512;
         return card_info_.CardBlockSize;
     }
 
     virtual uint32_t get_blocks_count() override
     {
+        if (!init_ok_)
+            return 0;
         return card_info_.CardCapacity;
     }
 
     virtual void read_blocks(uint32_t start_block, uint32_t blocks_count, gsl::span<uint8_t> buffer) override
     {
+        if (!init_ok_) {
+            memset(buffer.data(), 0xff, buffer.size());
+            return;
+        }
         spi8_dev_->set_clock_rate(SD_SPI_HIGH_CLOCK_RATE);
         sd_read_sector_dma(buffer.data(), start_block, blocks_count);
     }
 
     virtual void write_blocks(uint32_t start_block, uint32_t blocks_count, gsl::span<const uint8_t> buffer) override
     {
+        if (!init_ok_)
+            return;
         spi8_dev_->set_clock_rate(SD_SPI_HIGH_CLOCK_RATE);
         sd_write_sector_dma(buffer.data(), start_block, blocks_count);
     }
 
 private:
+    bool init_ok_ = false;
+
     void set_tf_cs_low()
     {
         cs_gpio_->set_pin_value(cs_gpio_pin_, GPIO_PV_LOW);

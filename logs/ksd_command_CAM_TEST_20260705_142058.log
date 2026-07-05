@@ -1,0 +1,39 @@
+[stack] K210 camera/SD test boot
+[OK] UART LOG PC
+[OK] Audio AMP off
+[OK] LCD init
+[OK] SD mount deferred
+[OK] Camera lazy start
+[sd-uart] persistent service started
+[sd-uart] magic matched
+[OK] PC UART KSD listener
+Idle. Use CAM_CAPTURE capture.rgb565
+KSD:HELLO
+[sd-uart] persistent host connected
+KSD:CMD
+[sd-uart] command RX OK: chars=8 bytes=9 hex=43 41 4D 5F 54 45 53 54 0A  text=CAM_TEST
+[sd-uart] host requested CAM_TEST
+[cam] attempt 0: id=0x9d
+[cam] page0 id readback=0x9d
+[cam] after-vga-fix regs id=9d f1=07 f2=01 17=14 4b=8b 50=01 55=01 56=e0 57=02 58=80 59=11 5a=02
+[cam] DVP cfg maixpy-poll VGA DATA_MUX1 GC0328_VGA sts=0x00000000 cfg=0x1e01430f cmos=0x00010103 fb=0x8014e900 snap=0x801e4900 ai=0x8006d8c0 fb_bytes=614400 ai_bytes=921600
+[cam] maixpy skip_frames poll start time=2000ms
+[cam] skip ok begin_irq=1 end_irq=1 sts=0x00000000 cfg=0x1e01430f
+[cam] skip ok begin_irq=1 end_irq=1 sts=0x00000000 cfg=0x1e01430f
+[cam] skip ok begin_irq=1 end_irq=1 sts=0x00000000 cfg=0x1e01430f
+[cam] skip ok begin_irq=1 end_irq=1 sts=0x00000000 cfg=0x1e01430f
+[cam] skip ok begin_irq=1 end_irq=1 sts=0x00000000 cfg=0x1e01430f
+[cam] skip ok begin_irq=1 end_irq=1 sts=0x00000000 cfg=0x1e01430f
+[cam] skip ok begin_irq=1 end_irq=1 sts=0x00000000 cfg=0x1e01430f
+[cam] skip ok begin_irq=1 end_irq=1 sts=0x00000000 cfg=0x1e01430f
+[cam] maixpy skip_frames poll done ok=8 begin=16 end=8
+[cam] maixpy-poll VGA capture start frames=12
+[cam] snapshot ok begin_irq=2 end_irq=1 sts=0x00000000 cfg=0x1e01430f
+[cam] maixpy-poll VGA frame 0 score=48560991 fb: rows=480 firstrow=0 lastrow=479 changes=142591 nonzero=307200 first=7194 last=3bc7 ai: changes=541131 nonzero=921600
+[cam] good enough full-ish VGA frame at maixpy-poll frame 0
+[cam] maixpy-poll VGA capture stop best_frame=0 best_score=48560991 begin=20 end=9
+[cam] route DVP data pads back to LCD
+[cam] selected snapshot rows=480 firstrow=0 lastrow=479 changes=142591 nonzero=307200 first=7194 last=3bc7
+KSD:CAM_OK 640x480-614400-RGB565
+KSD:CMD
+[sd-uart] command RX timeout: chars=0 bytes=0 hex= text=

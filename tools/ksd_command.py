@@ -38,6 +38,10 @@ def command_terminals(command: str) -> tuple[set[str], set[str]]:
         return {"KSD:FORMAT_OK"}, {"KSD:FORMAT_FAIL"}
     if cmd == "CAM_CAPTURE":
         return {"KSD:CAPTURE_OK"}, {"KSD:CAPTURE_FAIL"}
+    if cmd == "CAM_TEST":
+        return {"KSD:CAM_OK"}, {"KSD:CAM_FAIL"}
+    if cmd == "SD_TEST":
+        return {"KSD:SD_OK"}, {"KSD:SD_FAIL"}
     if cmd == "FLASH_ESP":
         return {"KSD:FLASH_OK"}, {"KSD:FLASH_FAIL"}
     if cmd == "RUN_SPI":

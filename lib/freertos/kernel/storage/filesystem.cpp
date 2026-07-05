@@ -365,7 +365,8 @@ extern "C"
         BYTE pdrv /* Physical drive nmuber to identify the drive */
     )
     {
-        k_filesystem::get_filesystem(pdrv);
+        if (!k_filesystem::get_filesystem(pdrv))
+            return STA_NOINIT;
         return RES_OK;
     }
 
@@ -377,6 +378,8 @@ extern "C"
     )
     {
         auto fs = k_filesystem::get_filesystem(pdrv);
+        if (!fs)
+            return RES_NOTRDY;
         auto &st = fs->get_storage();
 
         st.read_blocks(sector, count, { buff, ptrdiff_t(st.get_rw_block_size() * count) });
@@ -391,6 +394,8 @@ extern "C"
     )
     {
         auto fs = k_filesystem::get_filesystem(pdrv);
+        if (!fs)
+            return RES_NOTRDY;
         auto &st = fs->get_storage();
 
         st.write_blocks(sector, count, { buff, ptrdiff_t(st.get_rw_block_size() * count) });
@@ -404,6 +409,8 @@ extern "C"
     )
     {
         auto fs = k_filesystem::get_filesystem(pdrv);
+        if (!fs)
+            return RES_NOTRDY;
         auto &st = fs->get_storage();
 
         switch (cmd)

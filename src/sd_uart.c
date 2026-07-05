@@ -221,6 +221,12 @@ static bool receive_file(const char *rel_path, uint32_t size)
         host_puts("KSD:ERR bad-path\n");
         return false;
     }
+    if (!sd_mount()) {
+        LOG("[sd-uart] PUT SD mount failed");
+        diag_line(5, "PUT SD mount fail");
+        host_puts("KSD:ERR sd\n");
+        return false;
+    }
     make_parent_dirs(rel_path);
     f_unlink(fat_path);
     handle_t f = filesystem_file_open(path, FILE_ACCESS_WRITE, FILE_MODE_CREATE_ALWAYS);

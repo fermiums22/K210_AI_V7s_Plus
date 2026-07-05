@@ -1,0 +1,19 @@
+[stack] K210 camera/SD test boot
+[OK] UART LOG PC
+[OK] Audio AMP off
+[OK] LCD init
+[OK] SD mount deferred
+[OK] Camera lazy start
+[sd-uart] persistent service started
+[sd-uart] magic matched
+[OK] PC UART KSD listener
+Idle. Use CAM_CAPTURE capture.rgb565
+KSD:HELLO
+[sd-uart] persistent host connected
+KSD:CMD
+[sd-uart] command RX OK: chars=7 bytes=8 hex=53 44 5F 54 45 53 54 0A  text=SD_TEST
+[sd-uart] host requested SD_TEST
+[sdcard] init rc=255 capacity=7935396665202193457 block=1702522479
+[sd] card driver ready
+[sd] mount rc=-1
+KSD:SD_FAIL rw

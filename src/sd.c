@@ -84,10 +84,8 @@ bool sd_format(void)
 
     LOG("[sd] FORMAT_SD requested: destructive FatFs format");
 
-    /* f_mkfs() uses FatFs logical drive 0:.  Unmounting here is harmless when
-     * the previous mount failed, and avoids formatting an actively mounted FS. */
-    f_unmount("0:");
-    s_mounted = 0;
+    /* This SDK routes FatFs diskio through the registered /fs/0/ storage
+     * object, so f_mkfs("0:") must run while that object still exists. */
     memset(s_mkfs_work, 0, sizeof(s_mkfs_work));
 
     FRESULT fr = f_mkfs("0:", FM_ANY, 0, s_mkfs_work, sizeof(s_mkfs_work));
