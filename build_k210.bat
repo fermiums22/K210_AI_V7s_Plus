@@ -44,7 +44,15 @@ if not exist "%WIFI_CFG%" (
 if exist "tools\patch_sdcard_full_duplex_read.py" (
   py -3 tools\patch_sdcard_full_duplex_read.py
   if errorlevel 1 (
-    echo ERROR: SD full duplex read patch failed
+    echo ERROR: SD command probe patch failed
+    exit /b 1
+  )
+)
+
+if exist "tools\patch_sdcard_cs_mask.py" (
+  py -3 tools\patch_sdcard_cs_mask.py
+  if errorlevel 1 (
+    echo ERROR: SD CS mask patch failed
     exit /b 1
   )
 )
