@@ -10,7 +10,6 @@
 #include <devices.h>
 #include <fpioa.h>
 #include <platform.h>
-#include <filesystem.h>
 #include <ff.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -78,7 +77,8 @@ typedef struct {
 } spi_case_t;
 
 typedef struct {
-    handle_t f;
+    FIL f;
+    int open;
     char name[48];
     char rel_path[80];
     uint32_t expected;
@@ -368,15 +368,14 @@ static int safe_file_name(const char *s)
 
 static void rx_close(file_rx_t *rx)
 {
-    if (rx->f) {
-        filesystem_file_close(rx->f);
-        rx->f = 0;
+    if (rx->open) {
+        f_close(&rx->f);
+        rx->open = 0;
     }
 }
 
 static int rx_begin(file_rx_t *rx, const kesp_frame_t *f)
 {
-    char fs_path[128];
     char fat_path[128];
     char name[sizeof(rx->name)];
     uint32_t n = f->len;
@@ -399,16 +398,18 @@ static int rx_begin(file_rx_t *rx, const kesp_frame_t *f)
 
     snprintf(rx->name, sizeof(rx->name), "%s", name);
     snprintf(rx->rel_path, sizeof(rx->rel_path), "wifi/%s", name);
-    snprintf(fs_path, sizeof(fs_path), "/fs/0/%s", rx->rel_path);
     snprintf(fat_path, sizeof(fat_path), "0:/%s", rx->rel_path);
-    f_mkdir("0:/wifi");
+    FRESULT fr = f_mkdir("0:/wifi");
+    if (fr != FR_OK && fr != FR_EXIST)
+        LOGF("[wifi-sd] BEGIN mkdir wifi failed rc=%d", (int)fr);
     f_unlink(fat_path);
 
-    rx->f = filesystem_file_open(fs_path, FILE_ACCESS_WRITE, FILE_MODE_CREATE_ALWAYS);
-    if (!rx->f) {
-        LOGF("[wifi-sd] BEGIN open failed %s", fs_path);
+    fr = f_open(&rx->f, fat_path, FA_WRITE | FA_CREATE_ALWAYS);
+    if (fr != FR_OK) {
+        LOGF("[wifi-sd] BEGIN open failed %s rc=%d", fat_path, (int)fr);
         return 0;
     }
+    rx->open = 1;
     rx->expected = f->total;
     rx->written = 0;
     rx->frames = 0;
@@ -419,7 +420,7 @@ static int rx_begin(file_rx_t *rx, const kesp_frame_t *f)
 
 static int rx_data(file_rx_t *rx, const kesp_frame_t *f)
 {
-    if (!rx->f) {
+    if (!rx->open) {
         LOGF("[wifi-sd] DATA without open seq=%lu", (unsigned long)f->seq);
         return 0;
     }
@@ -435,9 +436,10 @@ static int rx_data(file_rx_t *rx, const kesp_frame_t *f)
         rx_close(rx);
         return 0;
     }
-    int wr = filesystem_file_write(rx->f, f->payload, f->len);
-    if (wr != (int)f->len) {
-        LOGF("[wifi-sd] DATA write failed len=%u wr=%d", f->len, wr);
+    UINT wr = 0;
+    FRESULT fr = f_write(&rx->f, f->payload, f->len, &wr);
+    if (fr != FR_OK || wr != f->len) {
+        LOGF("[wifi-sd] DATA write failed len=%u wr=%u rc=%d", f->len, (unsigned)wr, (int)fr);
         rx_close(rx);
         return 0;
     }
@@ -452,7 +454,7 @@ static int rx_data(file_rx_t *rx, const kesp_frame_t *f)
 static int rx_end(file_rx_t *rx, const kesp_frame_t *f)
 {
     (void)f;
-    if (!rx->f) {
+    if (!rx->open) {
         LOG("[wifi-sd] END without open");
         return 0;
     }
