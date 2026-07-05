@@ -7,6 +7,7 @@
 #include "sd.h"
 #include "pinout.h"
 #include "log.h"
+#include "k210_maixpy_sd_port.h"
 
 #include <FreeRTOS.h>
 #include <task.h>
@@ -73,6 +74,19 @@ static void sd_driver_drop(void)
 static handle_t sd_driver_open_once(void)
 {
     sd_powerup_wait_once();
+
+    /*
+     * First prove the real low-level milestone through the clean MaixPy /
+     * Kendryte-style backend.  If CMD0 still returns 0xff, do not continue into
+     * FatFs or ESP-related paths; they are downstream from the missing SPI-mode
+     * SD response.
+     */
+    uint8_t cmd0 = k210_maixpy_sd_probe_cmd0();
+    if (cmd0 != 0x01u) {
+        LOGF("[sd] lowlevel CMD0 failed r=%02x", (unsigned int)cmd0);
+        return 0;
+    }
+
     sd_pinmux();
 
     s_spi = io_open("/dev/spi1");
