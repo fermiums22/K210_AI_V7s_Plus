@@ -17,13 +17,15 @@
 #include <ff.h>
 #include <string.h>
 
-#define SD_MOUNT_ATTEMPTS      5u
-#define SD_MOUNT_REINIT_DELAY  120u
+#define SD_MOUNT_ATTEMPTS        8u
+#define SD_POWERUP_DELAY_MS      1500u
+#define SD_MOUNT_REINIT_DELAY_MS 500u
 
 static handle_t s_spi;
 static handle_t s_gpio;
 static handle_t s_sd;
 static int s_mounted;
+static int s_powerup_wait_done;
 static uint8_t s_mkfs_work[4096] __attribute__((aligned(64)));
 
 static TickType_t ms_to_ticks_min(uint32_t ms)
@@ -32,6 +34,15 @@ static TickType_t ms_to_ticks_min(uint32_t ms)
     if (ticks == 0)
         ticks = 1;
     return ticks;
+}
+
+static void sd_powerup_wait_once(void)
+{
+    if (s_powerup_wait_done)
+        return;
+    s_powerup_wait_done = 1;
+    LOGF("[sd] power-up settle %lu ms", (unsigned long)SD_POWERUP_DELAY_MS);
+    vTaskDelay(ms_to_ticks_min(SD_POWERUP_DELAY_MS));
 }
 
 static void sd_pinmux(void)
@@ -61,6 +72,7 @@ static void sd_driver_drop(void)
 
 static handle_t sd_driver_open_once(void)
 {
+    sd_powerup_wait_once();
     sd_pinmux();
 
     s_spi = io_open("/dev/spi1");
@@ -102,7 +114,7 @@ bool sd_mount(void)
             LOGF("[sd] driver unavailable attempt %lu/%lu", (unsigned long)attempt,
                  (unsigned long)SD_MOUNT_ATTEMPTS);
             sd_driver_drop();
-            vTaskDelay(ms_to_ticks_min(SD_MOUNT_REINIT_DELAY));
+            vTaskDelay(ms_to_ticks_min(SD_MOUNT_REINIT_DELAY_MS));
             continue;
         }
 
@@ -117,7 +129,7 @@ bool sd_mount(void)
         LOGF("[sd] mount rc=%d attempt %lu/%lu", r, (unsigned long)attempt,
              (unsigned long)SD_MOUNT_ATTEMPTS);
         sd_driver_drop();
-        vTaskDelay(ms_to_ticks_min(SD_MOUNT_REINIT_DELAY));
+        vTaskDelay(ms_to_ticks_min(SD_MOUNT_REINIT_DELAY_MS));
     }
 
     LOG("[sd] mount failed after reinit attempts");
