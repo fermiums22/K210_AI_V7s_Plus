@@ -23,8 +23,6 @@ ON_FIRST_OPEN = r'''    virtual void on_first_open() override
                init_rc,
                (unsigned long long)card_info_.CardCapacity,
                (unsigned long)card_info_.CardBlockSize);
-        if (!init_ok_)
-            throw init_rc;
     }'''
 
 READ_DATA = r'''    void sd_read_data(uint8_t *data_buff, size_t length)
@@ -40,7 +38,7 @@ READ_DATA_DMA = r'''    void sd_read_data_dma(uint8_t *data_buff)
 GET_RESPONSE = r'''    uint8_t sd_get_response()
     {
         uint8_t result;
-        uint16_t timeout = 0x1FFF;
+        uint16_t timeout = 0x00FF;
         while (timeout--)
         {
             sd_read_data(&result, 1);
@@ -169,7 +167,7 @@ def main() -> int:
     else:
         SDCARD.write_text(new, encoding="utf-8", newline="\n")
         print("patched:   lib/drivers/src/storage/sdcard.cpp")
-    print("SDCARD_CMD_PROBE_PATCH_OK sdk_read=1 timeout=0x1FFF failfast=1 cs_arg=1")
+    print("SDCARD_CMD_PROBE_PATCH_OK sdk_read=1 timeout=0x00FF no_throw=1 cs_arg=1")
     return 0
 
 
