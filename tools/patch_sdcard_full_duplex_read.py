@@ -24,6 +24,97 @@ READ_DATA_DMA = r'''    void sd_read_data_dma(uint8_t *data_buff)
         sd_read_data(data_buff, 512);
     }'''
 
+GET_RESPONSE = r'''    uint8_t sd_get_response()
+    {
+        uint8_t result;
+        uint16_t timeout = 0xFFFF;
+        while (timeout--)
+        {
+            sd_read_data(&result, 1);
+            if (result != 0xFF)
+                return result;
+        }
+        return 0xFF;
+    }'''
+
+SD_INIT = r'''    uint8_t sd_init()
+    {
+        uint8_t frame[10], index, result;
+
+        set_tf_cs_high();
+        for (index = 0; index < 10; index++)
+            frame[index] = 0xFF;
+        sd_write_data(frame, 10);
+
+        sd_send_cmd(SD_CMD0, 0, 0x95);
+        result = sd_get_response();
+        sd_end_cmd();
+        printf("[sdcard] CMD0 r=%02x\n", result);
+        if (result != 0x01)
+            return 0xFF;
+
+        sd_send_cmd(SD_CMD8, 0x01AA, 0x87);
+        result = sd_get_response();
+        sd_read_data(frame, 4);
+        sd_end_cmd();
+        printf("[sdcard] CMD8 r=%02x ocr=%02x %02x %02x %02x\n", result, frame[0], frame[1], frame[2], frame[3]);
+        if (result != 0x01)
+            return 0xFF;
+
+        index = 0xFF;
+        while (index--)
+        {
+            sd_send_cmd(SD_CMD55, 0, 1);
+            result = sd_get_response();
+            sd_end_cmd();
+            if (result != 0x01)
+            {
+                printf("[sdcard] CMD55 fail r=%02x left=%u\n", result, (unsigned)index);
+                return 0xFF;
+            }
+            sd_send_cmd(SD_ACMD41, 0x40000000, 1);
+            result = sd_get_response();
+            sd_end_cmd();
+            if (result == 0x00)
+                break;
+        }
+        printf("[sdcard] ACMD41 last r=%02x left=%u\n", result, (unsigned)index);
+        if (index == 0)
+            return 0xFF;
+
+        index = 0xFF;
+        while (index--)
+        {
+            sd_send_cmd(SD_CMD58, 0, 1);
+            result = sd_get_response();
+            sd_read_data(frame, 4);
+            sd_end_cmd();
+            if (result == 0)
+                break;
+        }
+        printf("[sdcard] CMD58 r=%02x ocr=%02x %02x %02x %02x left=%u\n", result, frame[0], frame[1], frame[2], frame[3], (unsigned)index);
+        if (index == 0)
+            return 0xFF;
+
+        if ((frame[0] & 0x40) == 0)
+        {
+            sd_send_cmd(SD_CMD16, 512, 1);
+            result = sd_get_response();
+            sd_end_cmd();
+            printf("[sdcard] CMD16 r=%02x\n", result);
+            if (result != 0x00)
+                return 0xFF;
+        }
+
+        spi8_dev_->set_clock_rate(SD_SPI_HIGH_CLOCK_RATE);
+        result = sd_get_cardinfo(&card_info_);
+        printf("[sdcard] CARDINFO r=%02x capacity=%llu block=%lu\n",
+               result,
+               (unsigned long long)card_info_.CardCapacity,
+               (unsigned long)card_info_.CardBlockSize);
+        return result;
+    }'''
+
 
 def find_function_span(text: str, signature: str) -> tuple[int, int]:
     start = text.find(signature)
@@ -54,12 +145,14 @@ def main() -> int:
     new = old
     new = replace_function(new, "    void sd_read_data(uint8_t *data_buff, size_t length)", READ_DATA)
     new = replace_function(new, "    void sd_read_data_dma(uint8_t *data_buff)", READ_DATA_DMA)
+    new = replace_function(new, "    uint8_t sd_get_response()", GET_RESPONSE)
+    new = replace_function(new, "    uint8_t sd_init()", SD_INIT)
     if new == old:
         print("unchanged: lib/drivers/src/storage/sdcard.cpp")
     else:
         SDCARD.write_text(new, encoding="utf-8", newline="\n")
         print("patched:   lib/drivers/src/storage/sdcard.cpp")
-    print("SDCARD_FD_READ_PATCH_OK dummy_tx=0xFF full_duplex=1")
+    print("SDCARD_FD_READ_PATCH_OK dummy_tx=0xFF full_duplex=1 maixpy_timeout=0xFFFF cmd_debug=1")
     return 0
 
 
