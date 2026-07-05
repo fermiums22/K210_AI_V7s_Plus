@@ -5,6 +5,26 @@
 в отдельном проекте `../V7s_Plus`. Здесь — мозги: камера, экран, Wi-Fi, нейросеть на K210 и
 связь с домашним сервером.
 
+## Обязательно прочитать перед SD/SPI/KSD правками
+
+Перед любыми изменениями в SD, SPI1, FPIOA, GPIOHS, LCD/SD shared bus или KSD `SD_TEST`
+сначала читать:
+
+```text
+docs/SD_SPI_K210_REGISTER_MAP.md
+```
+
+Текущий важный симптом SD bring-up:
+
+```text
+[sdcard] CMD0 r=ff
+```
+
+Это означает, что текущий K210 SD init path не получает ответа на первый SD SPI-mode CMD0.
+Пока это не стало `CMD0 r=01`, не надо чинить FatFs, ESP flashing, Wi-Fi, SHA, KSD chunk size
+или финальный PC -> Wi-Fi -> SPI -> SD тест. Сначала нужно повторить рабочий MaixPy/Kendryte
+standalone low-level путь SPI1/FPIOA/GPIOHS.
+
 ## Главная цель всей связки K210 + ESP8285
 
 Нужно сделать нормальный рабочий цикл разработки и прошивки для связки:
