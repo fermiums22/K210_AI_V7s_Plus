@@ -25,6 +25,7 @@
 #define SD_MOUNT_ATTEMPTS        1u
 #define SD_POWERUP_DELAY_MS      1500u
 #define SD_MOUNT_REINIT_DELAY_MS 1u
+#define SD_RAW_SPI_CLOCK_HZ      200000u
 
 static handle_t s_spi;
 static handle_t s_gpio;
@@ -74,6 +75,70 @@ static void sd_driver_drop(void)
         io_close(s_gpio);
         s_gpio = 0;
     }
+}
+
+static uint8_t raw_xfer8(handle_t spi_dev, uint8_t tx)
+{
+    uint8_t rx = 0xff;
+    int n = spi_dev_transfer_full_duplex(spi_dev, &tx, 1, &rx, 1);
+    if (n != 1)
+        return 0xfe;
+    return rx;
+}
+
+int sd_raw_cmd0_probe(void)
+{
+    sd_powerup_wait_once();
+    sd_pinmux();
+
+    handle_t spi = io_open("/dev/spi1");
+    handle_t gpio = io_open("/dev/gpio0");
+    if (!spi || !gpio) {
+        LOG("[sdraw] open spi1/gpio0 failed");
+        if (spi) io_close(spi);
+        if (gpio) io_close(gpio);
+        return 0xfe;
+    }
+
+    gpio_set_drive_mode(gpio, GPIOHS_SD_CS, GPIO_DM_OUTPUT);
+    gpio_set_pin_value(gpio, GPIOHS_SD_CS, GPIO_PV_HIGH);
+
+    handle_t dev = spi_get_device(spi, SPI_MODE_0, SPI_FF_STANDARD, 1, 8);
+    if (!dev) {
+        LOG("[sdraw] spi_get_device failed");
+        io_close(gpio);
+        io_close(spi);
+        return 0xfd;
+    }
+    spi_dev_set_clock_rate(dev, SD_RAW_SPI_CLOCK_HZ);
+
+    LOG("[sdraw] raw full-duplex CMD0 probe begin");
+    for (int i = 0; i < 10; i++)
+        raw_xfer8(dev, 0xff);
+
+    gpio_set_pin_value(gpio, GPIOHS_SD_CS, GPIO_PV_LOW);
+    const uint8_t cmd0[6] = { 0x40, 0x00, 0x00, 0x00, 0x00, 0x95 };
+    uint8_t rx[6];
+    memset(rx, 0xff, sizeof(rx));
+    int n = spi_dev_transfer_full_duplex(dev, cmd0, sizeof(cmd0), rx, sizeof(rx));
+    LOGF("[sdraw] CMD0 txrx n=%d rx=%02x %02x %02x %02x %02x %02x", n,
+         rx[0], rx[1], rx[2], rx[3], rx[4], rx[5]);
+
+    uint8_t r = 0xff;
+    for (int i = 0; i < 16; i++) {
+        r = raw_xfer8(dev, 0xff);
+        if (r != 0xff)
+            break;
+    }
+    raw_xfer8(dev, 0xff);
+    gpio_set_pin_value(gpio, GPIOHS_SD_CS, GPIO_PV_HIGH);
+    raw_xfer8(dev, 0xff);
+
+    LOGF("[sdraw] CMD0 r=%02x", r);
+    io_close(dev);
+    io_close(gpio);
+    io_close(spi);
+    return (int)r;
 }
 
 static handle_t sd_driver_open_once(void)
