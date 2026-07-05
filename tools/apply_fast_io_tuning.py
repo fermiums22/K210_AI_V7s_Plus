@@ -158,9 +158,6 @@ SD_PINMUX = r'''static void sd_pinmux(void)
 
 SD_DRIVER_OPEN_ONCE = r'''static handle_t sd_driver_open_once(void)
 {
-    uint8_t clocks[10];
-    memset(clocks, 0xff, sizeof(clocks));
-
     sd_pinmux();
 
     s_spi = io_open("/dev/spi1");
@@ -170,19 +167,6 @@ SD_DRIVER_OPEN_ONCE = r'''static handle_t sd_driver_open_once(void)
         sd_driver_drop();
         return 0;
     }
-
-    gpio_set_drive_mode(s_gpio, GPIOHS_SD_CS, GPIO_DM_OUTPUT);
-    gpio_set_pin_value(s_gpio, GPIOHS_SD_CS, GPIO_PV_HIGH);
-
-    handle_t spi_pre = spi_get_device(s_spi, SPI_MODE_0, SPI_FF_STANDARD, 1 << 1, 8);
-    if (!spi_pre) {
-        LOG("[sd] SPI preinit device failed");
-        sd_driver_drop();
-        return 0;
-    }
-    spi_dev_set_clock_rate(spi_pre, 200000);
-    io_write(spi_pre, clocks, sizeof(clocks));
-    LOG("[sd] claimed shared LCD/SD bus, CS high, 80 clocks");
 
     s_sd = spi_sdcard_driver_install(s_spi, s_gpio, GPIOHS_SD_CS);
     if (!s_sd) {
@@ -273,6 +257,32 @@ def patch_file(path: Path, edits: list[tuple[str, str, str]]) -> bool:
     return True
 
 
+def patch_main_boot_order(path: Path) -> None:
+    old = path.read_text(encoding="utf-8")
+    needle = '''    amp_init();
+    amp_set(false);
+    ok("Audio AMP off");
+
+    lcd_init();'''
+    repl = '''    amp_init();
+    amp_set(false);
+    ok("Audio AMP off");
+
+    if (sd_mount())
+        ok("SD init before LCD");
+    else
+        LOG("[ERR] SD init before LCD failed");
+
+    lcd_init();'''
+    new = old.replace(needle, repl, 1)
+    new = new.replace('    ok("SD mount deferred");\n', '    ok("SD init checked before LCD");\n', 1)
+    if new == old:
+        print(f"unchanged: {path.relative_to(ROOT)}")
+    else:
+        path.write_text(new, encoding="utf-8", newline="\n")
+        print(f"patched:   {path.relative_to(ROOT)}")
+
+
 def patch_sd_core(path: Path) -> None:
     old = path.read_text(encoding="utf-8")
     new = old
@@ -329,6 +339,7 @@ def main() -> int:
     if args.esp_block < 1024 or args.esp_block > 8192 or (args.esp_block % 1024) != 0:
         raise SystemExit("--esp-block must be 1024..8192 and divisible by 1024")
 
+    patch_main_boot_order(ROOT / "src" / "main.c")
     patch_sd_core(ROOT / "src" / "sd.c")
     patch_sd_uart(ROOT / "src" / "sd_uart.c", args.ksd_buf, args.ksd_stack)
     patch_file(
@@ -342,7 +353,7 @@ def main() -> int:
         "FAST_IO_TUNING_OK "
         f"ksd_buf={args.ksd_buf} ksd_stack={args.ksd_stack} "
         f"esp_baud={args.esp_baud} esp_block={args.esp_block} "
-        "ksd_io=fatfs sd_init=shared-bus-claim"
+        "ksd_io=fatfs sd_init=before-lcd shared-bus-claim"
     )
     return 0
 
