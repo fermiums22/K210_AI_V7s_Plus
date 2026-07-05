@@ -8,26 +8,18 @@ SDCARD = ROOT / "lib" / "drivers" / "src" / "storage" / "sdcard.cpp"
 
 READ_DATA = r'''    void sd_read_data(uint8_t *data_buff, size_t length)
     {
-        uint8_t tx[64];
-        memset(tx, 0xFF, sizeof(tx));
-        while (length)
-        {
-            size_t chunk = length < sizeof(tx) ? length : sizeof(tx);
-            spi8_dev_->transfer_full_duplex({ tx, std::ptrdiff_t(chunk) }, { data_buff, std::ptrdiff_t(chunk) });
-            data_buff += chunk;
-            length -= chunk;
-        }
+        spi8_dev_->read({ data_buff, std::ptrdiff_t(length) });
     }'''
 
 READ_DATA_DMA = r'''    void sd_read_data_dma(uint8_t *data_buff)
     {
-        sd_read_data(data_buff, 512);
+        spi8_dev_->read({ data_buff, 512L });
     }'''
 
 GET_RESPONSE = r'''    uint8_t sd_get_response()
     {
         uint8_t result;
-        uint16_t timeout = 0xFFFF;
+        uint16_t timeout = 0x1FFF;
         while (timeout--)
         {
             sd_read_data(&result, 1);
@@ -41,11 +33,13 @@ SD_INIT = r'''    uint8_t sd_init()
     {
         uint8_t frame[10], index, result;
 
+        printf("[sdcard] PROBE begin\n");
         set_tf_cs_high();
         for (index = 0; index < 10; index++)
             frame[index] = 0xFF;
         sd_write_data(frame, 10);
 
+        printf("[sdcard] CMD0 send\n");
         sd_send_cmd(SD_CMD0, 0, 0x95);
         result = sd_get_response();
         sd_end_cmd();
@@ -53,6 +47,7 @@ SD_INIT = r'''    uint8_t sd_init()
         if (result != 0x01)
             return 0xFF;
 
+        printf("[sdcard] CMD8 send\n");
         sd_send_cmd(SD_CMD8, 0x01AA, 0x87);
         result = sd_get_response();
         sd_read_data(frame, 4);
@@ -152,7 +147,7 @@ def main() -> int:
     else:
         SDCARD.write_text(new, encoding="utf-8", newline="\n")
         print("patched:   lib/drivers/src/storage/sdcard.cpp")
-    print("SDCARD_FD_READ_PATCH_OK dummy_tx=0xFF full_duplex=1 maixpy_timeout=0xFFFF cmd_debug=1")
+    print("SDCARD_CMD_PROBE_PATCH_OK sdk_read=1 timeout=0x1FFF pre_cmd_logs=1")
     return 0
 
 
