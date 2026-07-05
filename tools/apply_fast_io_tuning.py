@@ -93,6 +93,11 @@ SEND_FILE_RAW_FATFS = r'''static bool send_file_raw(const char *rel_path)
         host_puts("KSD:ERR bad-path\n");
         return false;
     }
+    if (!sd_mount()) {
+        LOG("[sd-uart] GET SD mount failed");
+        host_puts("KSD:ERR sd\n");
+        return false;
+    }
 
     FIL f;
     FRESULT fr = f_open(&f, fat_path, FA_READ);
@@ -143,6 +148,7 @@ SEND_FILE_RAW_FATFS = r'''static bool send_file_raw(const char *rel_path)
 
 SD_PINMUX = r'''static void sd_pinmux(void)
 {
+    sysctl_set_spi0_dvp_data(0);
     fpioa_set_function(PIN_SD_MOSI, FUNC_SPI1_D0);
     fpioa_set_function(PIN_SD_MISO, FUNC_SPI1_D1);
     fpioa_set_function(PIN_SD_CLK,  FUNC_SPI1_SCLK);
@@ -176,7 +182,7 @@ SD_DRIVER_OPEN_ONCE = r'''static handle_t sd_driver_open_once(void)
     }
     spi_dev_set_clock_rate(spi_pre, 200000);
     io_write(spi_pre, clocks, sizeof(clocks));
-    LOG("[sd] bus preinit OK: CS high, 80 clocks via device API");
+    LOG("[sd] claimed shared LCD/SD bus, CS high, 80 clocks");
 
     s_sd = spi_sdcard_driver_install(s_spi, s_gpio, GPIOHS_SD_CS);
     if (!s_sd) {
@@ -193,7 +199,8 @@ SD_DRIVER_OPEN_ONCE = r'''static handle_t sd_driver_open_once(void)
 SD_MOUNT_ONCE = r'''bool sd_mount(void)
 {
     if (s_mounted) {
-        LOG("[sd] already mounted at /fs/0/");
+        sd_pinmux();
+        LOG("[sd] already mounted at /fs/0/; SD bus claimed");
         return true;
     }
 
@@ -270,6 +277,8 @@ def patch_sd_core(path: Path) -> None:
     old = path.read_text(encoding="utf-8")
     new = old
     new = new.replace('#include <FreeRTOS.h>\n#include <task.h>\n', '')
+    if '#include <sysctl.h>' not in new:
+        new = new.replace('#include <fpioa.h>\n#include <ff.h>\n', '#include <fpioa.h>\n#include <sysctl.h>\n#include <ff.h>\n')
     new = re.sub(r'#define SD_MOUNT_ATTEMPTS\s+\d+u\n#define SD_POWERUP_DELAY_MS\s+\d+u\n#define SD_MOUNT_REINIT_DELAY_MS\s+\d+u\n', '', new, count=1)
     new = new.replace('static int s_powerup_wait_done;\n', '')
     new = remove_function_if_present(new, 'static TickType_t ms_to_ticks_min(uint32_t ms)')
@@ -333,7 +342,7 @@ def main() -> int:
         "FAST_IO_TUNING_OK "
         f"ksd_buf={args.ksd_buf} ksd_stack={args.ksd_stack} "
         f"esp_baud={args.esp_baud} esp_block={args.esp_block} "
-        "ksd_io=fatfs sd_init=maixpy-device-bus"
+        "ksd_io=fatfs sd_init=shared-bus-claim"
     )
     return 0
 
