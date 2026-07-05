@@ -69,13 +69,10 @@ int main(void)
     amp_set(false);
     ok("Audio AMP off");
 
-    lcd_init();
-    lcd_set_direction(DIR_YX_LRUD);
-    lcd_clear(BLACK);
-    s_screen_ready = 1;
-    screen_clear();
-    ok("LCD init");
-
+    /* SD and LCD share the IO28 area on this board.  For the KSD bring-up
+     * stage, keep LCD uninitialized so SPI0/DVP cannot steal the SD bus before
+     * SD_TEST.  Once SD is stable, LCD can be re-enabled after the SD mount. */
+    ok("LCD deferred for SD bus");
     ok("SD mount deferred");
     ok("Camera lazy start");
 
