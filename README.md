@@ -98,6 +98,12 @@ KSD:TEST_END PASS
 call run_camera_capture.bat COM12
 ```
 
+Любую отдельную команду можно вызвать так:
+
+```bat
+py -3 tools\ksd_cmd.py --port COM12 --baud 921600 --connect-timeout 30 --cmd HELP
+```
+
 `tools\ksd_cmd.py` возвращает errorlevel 1 для `FAIL`-ответов сервера и 0 для `PASS/OK/SKIP`.
 `MICROPHONE` пока честно `SKIP`, потому что отдельного mic capture-драйвера в проекте нет.
 `ESP_UART_SPI` в общем K210-самотесте тоже `SKIP`; его проверяем отдельно после прошивки ESP через `RUN_SPI`.
