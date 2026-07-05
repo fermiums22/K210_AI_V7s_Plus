@@ -1,17 +1,3 @@
-/* Copyright 2018 Canaan Inc.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 #include <FreeRTOS.h>
 #include <dvp.h>
 #include <fpioa.h>
@@ -36,49 +22,35 @@ public:
     virtual void install() override
     {
         sysctl_clock_disable(clock_);
-
         pic_set_irq_handler(IRQN_DVP_INTERRUPT, dvp_frame_event_isr, this);
         pic_set_irq_priority(IRQN_DVP_INTERRUPT, 1);
     }
 
-    virtual void on_first_open() override
-    {
-        sysctl_clock_enable(clock_);
-    }
-
-    virtual void on_last_close() override
-    {
-        sysctl_clock_disable(clock_);
-    }
-
-    virtual uint32_t get_output_num() override
-    {
-        return 2;
-    }
+    virtual void on_first_open() override { sysctl_clock_enable(clock_); }
+    virtual void on_last_close() override { sysctl_clock_disable(clock_); }
+    virtual uint32_t get_output_num() override { return 2; }
 
     virtual void config(uint32_t width, uint32_t height, bool auto_enable) override
     {
         configASSERT(width % 8 == 0 && width && height);
-
         uint32_t dvp_cfg = dvp_.dvp_cfg;
 
         if (width / 8 % 4 == 0)
         {
             dvp_cfg |= DVP_CFG_BURST_SIZE_4BEATS;
-            set_bit_mask(&dvp_cfg, DVP_AXI_GM_MLEN_MASK | DVP_CFG_HREF_BURST_NUM_MASK, DVP_AXI_GM_MLEN_4BYTE | DVP_CFG_HREF_BURST_NUM(width / 8 / 4));
+            set_bit_mask(&dvp_cfg, DVP_AXI_GM_MLEN_MASK | DVP_CFG_HREF_BURST_NUM_MASK,
+                         DVP_AXI_GM_MLEN_4BYTE | DVP_CFG_HREF_BURST_NUM(width / 8 / 4));
         }
         else
         {
             dvp_cfg &= (~DVP_CFG_BURST_SIZE_4BEATS);
-            set_bit_mask(&dvp_cfg, DVP_AXI_GM_MLEN_MASK, DVP_AXI_GM_MLEN_1BYTE | DVP_CFG_HREF_BURST_NUM(width / 8));
+            set_bit_mask(&dvp_cfg, DVP_AXI_GM_MLEN_MASK,
+                         DVP_AXI_GM_MLEN_1BYTE | DVP_CFG_HREF_BURST_NUM(width / 8));
         }
 
         set_bit_mask(&dvp_cfg, DVP_CFG_LINE_NUM_MASK, DVP_CFG_LINE_NUM(height));
-
-        if (auto_enable)
-            dvp_cfg |= DVP_CFG_AUTO_ENABLE;
-        else
-            dvp_cfg &= ~DVP_CFG_AUTO_ENABLE;
+        if (auto_enable) dvp_cfg |= DVP_CFG_AUTO_ENABLE;
+        else dvp_cfg &= ~DVP_CFG_AUTO_ENABLE;
 
         dvp_.dvp_cfg = dvp_cfg;
         dvp_.cmos_cfg |= DVP_CMOS_CLK_DIV(xclk_devide_) | DVP_CMOS_CLK_ENABLE;
@@ -96,16 +68,12 @@ public:
         switch (type)
         {
         case DVP_SIG_POWER_DOWN:
-            if (value)
-                dvp_.cmos_cfg |= DVP_CMOS_POWER_DOWN;
-            else
-                dvp_.cmos_cfg &= ~DVP_CMOS_POWER_DOWN;
+            if (value) dvp_.cmos_cfg |= DVP_CMOS_POWER_DOWN;
+            else dvp_.cmos_cfg &= ~DVP_CMOS_POWER_DOWN;
             break;
         case DVP_SIG_RESET:
-            if (value)
-                dvp_.cmos_cfg |= DVP_CMOS_RESET;
-            else
-                dvp_.cmos_cfg &= ~DVP_CMOS_RESET;
+            if (value) dvp_.cmos_cfg |= DVP_CMOS_RESET;
+            else dvp_.cmos_cfg &= ~DVP_CMOS_RESET;
             break;
         default:
             configASSERT(!"Invalid signal type.");
@@ -116,27 +84,21 @@ public:
     virtual void set_output_enable(uint32_t index, bool enable) override
     {
         configASSERT(index < 2);
-
         if (index == 0)
         {
-            if (enable)
-                dvp_.dvp_cfg |= DVP_CFG_AI_OUTPUT_ENABLE;
-            else
-                dvp_.dvp_cfg &= ~DVP_CFG_AI_OUTPUT_ENABLE;
+            if (enable) dvp_.dvp_cfg |= DVP_CFG_AI_OUTPUT_ENABLE;
+            else dvp_.dvp_cfg &= ~DVP_CFG_AI_OUTPUT_ENABLE;
         }
         else
         {
-            if (enable)
-                dvp_.dvp_cfg |= DVP_CFG_DISPLAY_OUTPUT_ENABLE;
-            else
-                dvp_.dvp_cfg &= ~DVP_CFG_DISPLAY_OUTPUT_ENABLE;
+            if (enable) dvp_.dvp_cfg |= DVP_CFG_DISPLAY_OUTPUT_ENABLE;
+            else dvp_.dvp_cfg &= ~DVP_CFG_DISPLAY_OUTPUT_ENABLE;
         }
     }
 
     virtual void set_output_attributes(uint32_t index, video_format_t format, void *output_buffer) override
     {
         configASSERT(index < 2);
-
         if (index == 0)
         {
             configASSERT(format == VIDEO_FMT_RGB24_PLANAR);
@@ -183,7 +145,6 @@ public:
             configASSERT(!"Invalid event.");
             break;
         }
-
         pic_set_irq_enable(IRQN_DVP_INTERRUPT, 1);
     }
 
@@ -225,7 +186,6 @@ private:
 private:
     volatile dvp_t &dvp_;
     sysctl_clock_t clock_;
-
     dvp_on_frame_event_t frame_event_callback_;
     void *frame_event_callback_data_;
     size_t width_;
