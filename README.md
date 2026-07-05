@@ -98,14 +98,20 @@ KSD:TEST ESP_UART_SPI SKIP use-RUN_SPI-after-ESP-fw
 KSD:TEST_END PASS
 ```
 
-`MICROPHONE` пока честно `SKIP`, потому что отдельного mic capture-драйвера в проекте нет.
-`ESP_UART_SPI` в общем K210-самотесте тоже `SKIP`; его проверяем отдельно после прошивки ESP через `RUN_SPI`.
-
 Захват камеры в файл на SD и чтение обратно:
 
 ```bat
 call run_camera_capture.bat COM12
 ```
+
+Отдельная проверка устройства, например:
+
+```bat
+py -3 tools\ksd_cmd.py --port COM12 --baud 921600 --connect-timeout 30 --cmd SD_TEST
+```
+
+`MICROPHONE` пока честно `SKIP`, потому что отдельного mic capture-драйвера в проекте нет.
+`ESP_UART_SPI` в общем K210-самотесте тоже `SKIP`; его проверяем отдельно после прошивки ESP через `RUN_SPI`.
 
 ## Где мы в общей архитектуре
 
