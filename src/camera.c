@@ -14,10 +14,35 @@
 #include <stdint.h>
 
 #define GC0328_ADDR  0x42
-#define CAM_W        320
-#define CAM_H        240
+#define CAM_W        640
+#define CAM_H        480
 #define CAM_PIXELS   (CAM_W * CAM_H)
 #define CAM_FB_WORDS (CAM_PIXELS / 2)
+
+static const uint8_t s_gc0328_vga_config[][2] = {
+    {0xfe, 0x00},
+    {0x4b, 0x8b},
+    {0x50, 0x01},
+    {0x51, 0x00},
+    {0x52, 0x00},
+    {0x53, 0x00},
+    {0x54, 0x00},
+    {0x55, 0x01},
+    {0x56, 0xe0},
+    {0x57, 0x02},
+    {0x58, 0x80},
+    {0x59, 0x11},
+    {0x5a, 0x02},
+    {0x5b, 0x00},
+    {0x5c, 0x00},
+    {0x5d, 0x00},
+    {0x5e, 0x00},
+    {0x5f, 0x00},
+    {0x60, 0x00},
+    {0x61, 0x00},
+    {0x62, 0x00},
+    {0x00, 0x00},
+};
 
 static handle_t s_dvp, s_sccb, s_gc;
 static uint32_t s_fb[CAM_FB_WORDS] __attribute__((aligned(128)));
@@ -129,10 +154,16 @@ static void cam_log_stream_regs(const char *tag)
     uint8_t f1 = sccb_dev_read_byte(s_gc, 0xF1);
     uint8_t f2 = sccb_dev_read_byte(s_gc, 0xF2);
     uint8_t r17 = sccb_dev_read_byte(s_gc, 0x17);
+    uint8_t r4b = sccb_dev_read_byte(s_gc, 0x4B);
     uint8_t r50 = sccb_dev_read_byte(s_gc, 0x50);
+    uint8_t r55 = sccb_dev_read_byte(s_gc, 0x55);
+    uint8_t r56 = sccb_dev_read_byte(s_gc, 0x56);
+    uint8_t r57 = sccb_dev_read_byte(s_gc, 0x57);
+    uint8_t r58 = sccb_dev_read_byte(s_gc, 0x58);
     uint8_t r59 = sccb_dev_read_byte(s_gc, 0x59);
     uint8_t r5a = sccb_dev_read_byte(s_gc, 0x5A);
-    printf("[cam] %s regs id=%02x f1=%02x f2=%02x 17=%02x 50=%02x 59=%02x 5a=%02x\n", tag, id, f1, f2, r17, r50, r59, r5a);
+    printf("[cam] %s regs id=%02x f1=%02x f2=%02x 17=%02x 4b=%02x 50=%02x 55=%02x 56=%02x 57=%02x 58=%02x 59=%02x 5a=%02x\n",
+           tag, id, f1, f2, r17, r4b, r50, r55, r56, r57, r58, r59, r5a);
 }
 
 static cam_rgb565_stats_t cam_stats_rgb565(const uint16_t *p)
@@ -222,7 +253,7 @@ static void cam_config_dvp(void)
     s_begin_irq = 0;
     s_end_irq = 0;
     s_dvp_finish_flag = 0;
-    printf("[cam] DVP cfg maixpy-poll DATA_MUX1 GC0328_QVGA_FIX sts=0x%08lx cfg=0x%08lx cmos=0x%08lx fb=%p snap=%p ai=%p fb_bytes=%u ai_bytes=%u\n",
+    printf("[cam] DVP cfg maixpy-poll VGA DATA_MUX1 GC0328_VGA sts=0x%08lx cfg=0x%08lx cmos=0x%08lx fb=%p snap=%p ai=%p fb_bytes=%u ai_bytes=%u\n",
            (unsigned long)dvp->sts, (unsigned long)dvp->dvp_cfg, (unsigned long)dvp->cmos_cfg,
            (void *)s_fb, (void *)s_snap, (void *)s_ai,
            (unsigned)(CAM_W * CAM_H * 2), (unsigned)(CAM_W * CAM_H * 3));
@@ -321,23 +352,20 @@ int cam_start(char *name_out, int len)
         if (sensor_default_regs[i][0] == 0xfe && sensor_default_regs[i][1] == 0x80) usleep(50000);
         else usleep(1000);
     }
-    for (int i = 0; qvga_config[i][0]; i++) {
-        sccb_dev_write_byte(s_gc, qvga_config[i][0], qvga_config[i][1]);
+    for (int i = 0; s_gc0328_vga_config[i][0]; i++) {
+        sccb_dev_write_byte(s_gc, s_gc0328_vga_config[i][0], s_gc0328_vga_config[i][1]);
         usleep(1000);
     }
 
     sccb_dev_write_byte(s_gc, 0xfe, 0x00);
     sccb_dev_write_byte(s_gc, 0x17, 0x14);
-    sccb_dev_write_byte(s_gc, 0x50, 0x01);
-    sccb_dev_write_byte(s_gc, 0x59, 0x22);
-    sccb_dev_write_byte(s_gc, 0x5a, 0x03);
     usleep(30000);
 
-    cam_log_stream_regs("after-qvga-fix");
+    cam_log_stream_regs("after-vga-fix");
     cam_config_dvp();
     cam_skip_frames_maixpy();
     s_chip_id = id;
-    snprintf(s_cam_name, sizeof(s_cam_name), "GC0328 id=0x%02x", id);
+    snprintf(s_cam_name, sizeof(s_cam_name), "GC0328 VGA id=0x%02x", id);
     s_started = 1;
     if (name_out && len > 0) snprintf(name_out, len, "%s", s_cam_name);
     return id;
@@ -357,13 +385,13 @@ static int cam_capture_best_from_burst(void)
     int best_frame = -1;
 
     memset(s_snap, 0, sizeof(s_snap));
-    printf("[cam] maixpy-poll capture start frames=12\n");
+    printf("[cam] maixpy-poll VGA capture start frames=12\n");
 
     for (int frame = 0; frame < 12; frame++) {
         memset(s_fb, 0, sizeof(s_fb));
         memset(s_ai, 0, sizeof(s_ai));
 
-        int ok = cam_grab_once(500);
+        int ok = cam_grab_once(1000);
         if (!ok) {
             cam_log_stream_regs("grab-timeout");
             vTaskDelay(pdMS_TO_TICKS(20));
@@ -374,7 +402,7 @@ static int cam_capture_best_from_burst(void)
         cam_u8_stats_t ai = cam_stats_u8(s_ai, CAM_PIXELS * 3);
         uint32_t score = cam_frame_score(&fb);
 
-        printf("[cam] maixpy-poll frame %d score=%lu fb: rows=%lu firstrow=%d lastrow=%d changes=%lu nonzero=%lu first=%04x last=%04x ai: changes=%lu nonzero=%lu\n",
+        printf("[cam] maixpy-poll VGA frame %d score=%lu fb: rows=%lu firstrow=%d lastrow=%d changes=%lu nonzero=%lu first=%04x last=%04x ai: changes=%lu nonzero=%lu\n",
                frame, (unsigned long)score,
                (unsigned long)fb.rows_nonzero, fb.first_nonzero_row, fb.last_nonzero_row,
                (unsigned long)fb.changes, (unsigned long)fb.nonzero, fb.first, fb.last,
@@ -389,15 +417,15 @@ static int cam_capture_best_from_burst(void)
                 memcpy(s_snap, s_fb, sizeof(s_snap));
         }
 
-        if (fb.last_nonzero_row >= 220 && fb.rows_nonzero >= 200) {
-            printf("[cam] good enough full-ish frame at maixpy-poll frame %d\n", frame);
+        if (fb.last_nonzero_row >= (CAM_H - 20) && fb.rows_nonzero >= (CAM_H - 40)) {
+            printf("[cam] good enough full-ish VGA frame at maixpy-poll frame %d\n", frame);
             break;
         }
 
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 
-    printf("[cam] maixpy-poll capture stop best_frame=%d best_score=%lu begin=%lu end=%lu\n",
+    printf("[cam] maixpy-poll VGA capture stop best_frame=%d best_score=%lu begin=%lu end=%lu\n",
            best_frame, (unsigned long)best_score,
            (unsigned long)s_begin_irq, (unsigned long)s_end_irq);
     return best_frame >= 0;
