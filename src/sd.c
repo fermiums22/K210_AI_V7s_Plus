@@ -3,6 +3,11 @@
  *
  * Pins (pinout.h): MISO=IO26 (SPI1_D1), CLK=IO27, MOSI=IO28 (SPI1_D0),
  *                  CS=IO29 (GPIOHS29, software CS via /dev/gpio0).
+ *
+ * This intentionally stays close to the historically verified path from
+ * commit 3f524d7 (SD mounted and listed root entries).  Do not touch
+ * SPI0/DVP mux here: LCD uses its own init path, and SD must only force the
+ * four SD FPIOA functions below before opening /dev/spi1.
  */
 #include "sd.h"
 #include "pinout.h"
@@ -14,7 +19,6 @@
 #include <filesystem.h>
 #include <storage/sdcard.h>
 #include <fpioa.h>
-#include <sysctl.h>
 #include <ff.h>
 #include <string.h>
 
@@ -48,16 +52,11 @@ static void sd_powerup_wait_once(void)
 
 static void sd_pinmux(void)
 {
-    /* LCD init enables the SPI0->DVP octal data route.  On this board those
-     * shared pads overlap the SD wiring area, so force the shared data mux away
-     * from LCD before asking SPI1 to talk to the card. */
-    sysctl_set_spi0_dvp_data(0);
-
     fpioa_set_function(PIN_SD_MISO, FUNC_SPI1_D1);
     fpioa_set_function(PIN_SD_CLK,  FUNC_SPI1_SCLK);
     fpioa_set_function(PIN_SD_MOSI, FUNC_SPI1_D0);
     fpioa_set_function(PIN_SD_CS,   FUNC_GPIOHS0 + GPIOHS_SD_CS);
-    LOG("[sd] SD pinmux SPI1+DVPmux0");
+    LOG("[sd] SD pinmux SPI1");
 }
 
 static void sd_driver_drop(void)
@@ -80,7 +79,6 @@ static void sd_driver_drop(void)
 static handle_t sd_driver_open_once(void)
 {
     sd_powerup_wait_once();
-
     sd_pinmux();
 
     s_spi = io_open("/dev/spi1");
@@ -151,8 +149,6 @@ bool sd_format(void)
 
     LOG("[sd] FORMAT_SD requested: destructive FatFs format");
 
-    /* This SDK routes FatFs diskio through the registered /fs/0/ storage
-     * object, so f_mkfs("0:") must run while that object still exists. */
     memset(s_mkfs_work, 0, sizeof(s_mkfs_work));
 
     FRESULT fr = f_mkfs("0:", FM_ANY, 0, s_mkfs_work, sizeof(s_mkfs_work));
