@@ -6,6 +6,27 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SDCARD = ROOT / "lib" / "drivers" / "src" / "storage" / "sdcard.cpp"
 
+ON_FIRST_OPEN = r'''    virtual void on_first_open() override
+    {
+        auto spi = make_accessor(spi_driver_);
+        spi8_dev_ = make_accessor(spi->get_device(SPI_MODE_0, SPI_FF_STANDARD, 1, 8));
+
+        cs_gpio_ = make_accessor(cs_gpio_driver_);
+        cs_gpio_->set_drive_mode(cs_gpio_pin_, GPIO_DM_OUTPUT);
+        cs_gpio_->set_pin_value(cs_gpio_pin_, GPIO_PV_HIGH);
+
+        memset(&card_info_, 0, sizeof(card_info_));
+        spi8_dev_->set_clock_rate(SD_SPI_LOW_CLOCK_RATE);
+        int init_rc = sd_init();
+        init_ok_ = init_rc == 0;
+        printf("[sdcard] init rc=%d capacity=%llu block=%lu\n",
+               init_rc,
+               (unsigned long long)card_info_.CardCapacity,
+               (unsigned long)card_info_.CardBlockSize);
+        if (!init_ok_)
+            throw init_rc;
+    }'''
+
 READ_DATA = r'''    void sd_read_data(uint8_t *data_buff, size_t length)
     {
         spi8_dev_->read({ data_buff, std::ptrdiff_t(length) });
@@ -138,6 +159,7 @@ def replace_function(text: str, signature: str, replacement: str) -> str:
 def main() -> int:
     old = SDCARD.read_text(encoding="utf-8")
     new = old
+    new = replace_function(new, "    virtual void on_first_open() override", ON_FIRST_OPEN)
     new = replace_function(new, "    void sd_read_data(uint8_t *data_buff, size_t length)", READ_DATA)
     new = replace_function(new, "    void sd_read_data_dma(uint8_t *data_buff)", READ_DATA_DMA)
     new = replace_function(new, "    uint8_t sd_get_response()", GET_RESPONSE)
@@ -147,7 +169,7 @@ def main() -> int:
     else:
         SDCARD.write_text(new, encoding="utf-8", newline="\n")
         print("patched:   lib/drivers/src/storage/sdcard.cpp")
-    print("SDCARD_CMD_PROBE_PATCH_OK sdk_read=1 timeout=0x1FFF pre_cmd_logs=1")
+    print("SDCARD_CMD_PROBE_PATCH_OK sdk_read=1 timeout=0x1FFF failfast=1 cs_arg=1")
     return 0
 
 
