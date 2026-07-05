@@ -52,13 +52,7 @@ KSD:CAPTURE_OK capture.rgb565 614400 640 480 RGB565
 
 KSD UART: `COM12`, `921600` baud.
 
-Запрос списка команд:
-
-```bat
-py -3 tools\ksd_cmd.py --port COM12 --baud 921600 --connect-timeout 30 --cmd HELP
-```
-
-Поддерживаемые команды сервера:
+Команды сервера:
 
 ```text
 HELP
@@ -102,12 +96,6 @@ KSD:TEST_END PASS
 
 ```bat
 call run_camera_capture.bat COM12
-```
-
-Отдельная проверка устройства, например:
-
-```bat
-py -3 tools\ksd_cmd.py --port COM12 --baud 921600 --connect-timeout 30 --cmd SD_TEST
 ```
 
 `tools\ksd_cmd.py` возвращает errorlevel 1 для `FAIL`-ответов сервера и 0 для `PASS/OK/SKIP`.
