@@ -150,32 +150,56 @@ SD_PINMUX = r'''static void sd_pinmux(void)
 }'''
 
 
-SD_BUS_PREINIT = "\n".join([
-    "static void sd_bus_preinit(void)",
-    "{",
-    "    uint8_t clocks[10];",
-    "    memset(clocks, 0xff, sizeof(clocks));",
-    "    sd_pinmux();",
-    "    gpiohs_set_drive_mode(GPIOHS_SD_CS, GPIO_DM_OUTPUT);",
-    "    " + "gpiohs_set_" + "pin(GPIOHS_SD_CS, GPIO_PV_HIGH);",
-    "    " + "spi_" + "init(SD_SPI_DEVICE, SPI_WORK_MODE_0, SPI_FF_STANDARD, 8, 0);",
-    "    " + "spi_set_" + "clk_rate(SD_SPI_DEVICE, 200000);",
-    "    " + "spi_send_" + "data_standard(SD_SPI_DEVICE, SD_SPI_SS, NULL, 0, clocks, sizeof(clocks));",
-    "    LOG(\"[sd] bus preinit OK: CS high, 80 clocks\");",
-    "}",
-])
+SD_DRIVER_OPEN_ONCE = r'''static handle_t sd_driver_open_once(void)
+{
+    uint8_t clocks[10];
+    memset(clocks, 0xff, sizeof(clocks));
+
+    sd_pinmux();
+
+    s_spi = io_open("/dev/spi1");
+    s_gpio = io_open("/dev/gpio0");
+    if (!s_spi || !s_gpio) {
+        LOG("[sd] open spi1/gpio0 failed");
+        sd_driver_drop();
+        return 0;
+    }
+
+    gpio_set_drive_mode(s_gpio, GPIOHS_SD_CS, GPIO_DM_OUTPUT);
+    gpio_set_pin_value(s_gpio, GPIOHS_SD_CS, GPIO_PV_HIGH);
+
+    handle_t spi_pre = spi_get_device(s_spi, SPI_MODE_0, SPI_FF_STANDARD, 1 << 1, 8);
+    if (!spi_pre) {
+        LOG("[sd] SPI preinit device failed");
+        sd_driver_drop();
+        return 0;
+    }
+    spi_dev_set_clock_rate(spi_pre, 200000);
+    io_write(spi_pre, clocks, sizeof(clocks));
+    LOG("[sd] bus preinit OK: CS high, 80 clocks via device API");
+
+    s_sd = spi_sdcard_driver_install(s_spi, s_gpio, GPIOHS_SD_CS);
+    if (!s_sd) {
+        LOG("[sd] card init failed (inserted? wiring?)");
+        sd_driver_drop();
+        return 0;
+    }
+
+    LOG("[sd] card driver ready");
+    return s_sd;
+}'''
 
 
 SD_MOUNT_ONCE = r'''bool sd_mount(void)
 {
-    handle_t sd = sd_driver();
-    if (!sd)
-        return false;
-
     if (s_mounted) {
         LOG("[sd] already mounted at /fs/0/");
         return true;
     }
+
+    handle_t sd = sd_driver();
+    if (!sd)
+        return false;
 
     int r = filesystem_mount("/fs/0/", sd);
     if (r != 0) {
@@ -246,16 +270,12 @@ def patch_sd_core(path: Path) -> None:
     old = path.read_text(encoding="utf-8")
     new = old
     new = new.replace('#include <FreeRTOS.h>\n#include <task.h>\n', '')
-    if '#include <gpiohs.h>' not in new:
-        new = new.replace('#include <ff.h>\n#include <string.h>\n', '#include <ff.h>\n#include <gpiohs.h>\n#include <spi.h>\n#include <string.h>\n')
-    new = re.sub(r'#define SD_MOUNT_ATTEMPTS\s+\d+u\n#define SD_POWERUP_DELAY_MS\s+\d+u\n#define SD_MOUNT_REINIT_DELAY_MS\s+\d+u\n', '#define SD_SPI_DEVICE SPI_DEVICE_1\n#define SD_SPI_SS     SPI_CHIP_SELECT_1\n', new, count=1)
+    new = re.sub(r'#define SD_MOUNT_ATTEMPTS\s+\d+u\n#define SD_POWERUP_DELAY_MS\s+\d+u\n#define SD_MOUNT_REINIT_DELAY_MS\s+\d+u\n', '', new, count=1)
     new = new.replace('static int s_powerup_wait_done;\n', '')
     new = remove_function_if_present(new, 'static TickType_t ms_to_ticks_min(uint32_t ms)')
     new = remove_function_if_present(new, 'static void sd_powerup_wait_once(void)')
     new = replace_function(new, 'static void sd_pinmux(void)', SD_PINMUX)
-    if 'static void sd_bus_preinit(void)' not in new:
-        new = new.replace(SD_PINMUX + '\n\n', SD_PINMUX + '\n\n' + SD_BUS_PREINIT + '\n\n')
-    new = new.replace('    sd_powerup_wait_once();\n    sd_pinmux();\n', '    sd_bus_preinit();\n')
+    new = replace_function(new, 'static handle_t sd_driver_open_once(void)', SD_DRIVER_OPEN_ONCE)
     new = replace_function(new, 'bool sd_mount(void)', SD_MOUNT_ONCE)
     if new == old:
         print(f"unchanged: {path.relative_to(ROOT)}")
@@ -313,7 +333,7 @@ def main() -> int:
         "FAST_IO_TUNING_OK "
         f"ksd_buf={args.ksd_buf} ksd_stack={args.ksd_stack} "
         f"esp_baud={args.esp_baud} esp_block={args.esp_block} "
-        "ksd_io=fatfs sd_init=maixpy-bus"
+        "ksd_io=fatfs sd_init=maixpy-device-bus"
     )
     return 0
 
