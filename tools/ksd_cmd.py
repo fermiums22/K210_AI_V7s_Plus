@@ -175,7 +175,17 @@ def main() -> int:
     try:
         connect(ser, args.connect_timeout)
         lines = run_simple_command(ser, args.cmd)
-        failed = any("FAIL" in x or x.startswith("KSD:ERR") for x in lines)
+        failed = any(
+            " FAIL " in x or
+            x.startswith("KSD:ERR") or
+            x.startswith("KSD:CAPTURE_FAIL") or
+            x.startswith("KSD:FLASH_FAIL") or
+            x.startswith("KSD:FORMAT_FAIL") or
+            x.startswith("KSD:TEST_END FAIL") or
+            x.startswith("KSD:SD_FAIL") or
+            x.startswith("KSD:CAM_FAIL")
+            for x in lines
+        )
         if args.get_path and not failed:
             n = get_file(ser, args.get_path, Path(args.out))
             print(f"[get] OK {n} bytes")
