@@ -205,11 +205,63 @@ SD_MOUNT_ONCE = r'''bool sd_mount(void)
 }'''
 
 
+SDCARD_ON_FIRST_OPEN = r'''    virtual void on_first_open() override
+    {
+        auto spi = make_accessor(spi_driver_);
+        spi8_dev_ = make_accessor(spi->get_device(SPI_MODE_0, SPI_FF_STANDARD, 1, 8));
+
+        cs_gpio_ = make_accessor(cs_gpio_driver_);
+        cs_gpio_->set_drive_mode(cs_gpio_pin_, GPIO_DM_OUTPUT);
+        cs_gpio_->set_pin_value(cs_gpio_pin_, GPIO_PV_HIGH);
+
+        memset(&card_info_, 0, sizeof(card_info_));
+        spi8_dev_->set_clock_rate(SD_SPI_LOW_CLOCK_RATE);
+        int init_rc = sd_init();
+        init_ok_ = init_rc == 0;
+        printf("[sdcard] init rc=%d capacity=%llu block=%lu\n",
+               init_rc,
+               (unsigned long long)card_info_.CardCapacity,
+               (unsigned long)card_info_.CardBlockSize);
+        if (!init_ok_)
+            throw init_rc;
+    }'''
+
+
+SDCARD_SDSC_CMD16 = '''        if ((frame[0] & 0x40) == 0)
+        {
+            sd_send_cmd(SD_CMD16, 512, 1);
+            if (sd_get_response() != 0x00)
+            {
+                sd_end_cmd();
+                return 0xFF;
+            }
+            sd_end_cmd();
+        }
+
+        spi8_dev_->set_clock_rate(SD_SPI_HIGH_CLOCK_RATE);
+        return sd_get_cardinfo(&card_info_);
+'''
+
+
 def replace_one(text: str, pattern: str, repl: str, label: str) -> str:
     new, n = re.subn(pattern, repl, text, count=1, flags=re.MULTILINE)
     if n != 1:
         raise SystemExit(f"patch failed: {label}")
     return new
+
+
+def replace_regex_count(text: str, pattern: str, repl: str, label: str, expected: int = 1) -> str:
+    new, n = re.subn(pattern, repl, text, count=expected, flags=re.MULTILINE)
+    if n != expected:
+        raise SystemExit(f"patch failed: {label}: expected {expected}, got {n}")
+    return new
+
+
+def replace_literal_once(text: str, old: str, new_text: str, label: str) -> str:
+    count = text.count(old)
+    if count != 1:
+        raise SystemExit(f"patch failed: {label}: expected 1, got {count}")
+    return text.replace(old, new_text, 1)
 
 
 def find_function_span(text: str, signature: str) -> tuple[int, int]:
@@ -295,6 +347,30 @@ def patch_sd_core(path: Path) -> None:
         print(f"patched:   {path.relative_to(ROOT)}")
 
 
+def patch_sdcard_driver(path: Path) -> None:
+    old = path.read_text(encoding="utf-8")
+    new = old
+    new = replace_function(new, "    virtual void on_first_open() override", SDCARD_ON_FIRST_OPEN)
+    new = replace_regex_count(new, r"sd_send_cmd\(SD_CMD55,\s*0,\s*0\);", "sd_send_cmd(SD_CMD55, 0, 1);", "SD CMD55 MaixPy CRC")
+    new = replace_regex_count(new, r"sd_send_cmd\(SD_ACMD41,\s*0x40000000,\s*0\);", "sd_send_cmd(SD_ACMD41, 0x40000000, 1);", "SD ACMD41 MaixPy CRC")
+    new = replace_literal_once(
+        new,
+        '''        if ((frame[0] & 0x40) == 0)
+            return 0xFF;
+
+        spi8_dev_->set_clock_rate(SD_SPI_HIGH_CLOCK_RATE);
+        return sd_get_cardinfo(&card_info_);
+''',
+        SDCARD_SDSC_CMD16,
+        "SD SDSC CMD16 path",
+    )
+    if new == old:
+        print(f"unchanged: {path.relative_to(ROOT)}")
+    else:
+        path.write_text(new, encoding="utf-8", newline="\n")
+        print(f"patched:   {path.relative_to(ROOT)}")
+
+
 def patch_sd_uart(path: Path, ksd_buf: int, ksd_stack: int) -> None:
     old = path.read_text(encoding="utf-8")
     new = old
@@ -333,6 +409,7 @@ def main() -> int:
 
     patch_main_boot_order(ROOT / "src" / "main.c")
     patch_sd_core(ROOT / "src" / "sd.c")
+    patch_sdcard_driver(ROOT / "lib" / "drivers" / "src" / "storage" / "sdcard.cpp")
     patch_sd_uart(ROOT / "src" / "sd_uart.c", args.ksd_buf, args.ksd_stack)
     patch_file(
         ROOT / "src" / "esp_flasher.c",
@@ -345,7 +422,7 @@ def main() -> int:
         "FAST_IO_TUNING_OK "
         f"ksd_buf={args.ksd_buf} ksd_stack={args.ksd_stack} "
         f"esp_baud={args.esp_baud} esp_block={args.esp_block} "
-        "ksd_io=fatfs sd_init=lazy-shared-bus-dropbad"
+        "ksd_io=fatfs sd_init=lazy-shared-bus-dropbad sdcard_driver=maixpy-direct"
     )
     return 0
 
