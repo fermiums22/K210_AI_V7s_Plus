@@ -15,7 +15,7 @@ except Exception as exc:
     raise SystemExit(2)
 
 KSD_MAGIC = b"KSD1\n"
-DEFAULT_REMOTE = "diag/ksd_console_probe.bin"
+DEFAULT_REMOTE = "ksd_console_probe.bin"
 
 
 def make_payload(size: int) -> bytes:
