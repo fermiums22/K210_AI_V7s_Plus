@@ -11,7 +11,7 @@ if "%PORT%"=="" set "PORT=COM8"
 set "NO_BUILD=0"
 set "NO_MONITOR=0"
 set "KFLASH_BAUD=1500000"
-set "MONITOR_BAUD=921600"
+set "MONITOR_BAUD=115200"
 set "MONITOR_SECONDS=20"
 set "APP_SLOT_OFFSET=0x00100000"
 shift /1
@@ -59,6 +59,7 @@ echo Port:   %PORT%
 echo Baud:   %KFLASH_BAUD%
 echo Offset: %APP_SLOT_OFFSET%
 echo Method: kfpkg flash-list address, NOT kflash -A
+echo Monitor baud: %MONITOR_BAUD%
 echo.
 
 if "%NO_BUILD%"=="0" (
