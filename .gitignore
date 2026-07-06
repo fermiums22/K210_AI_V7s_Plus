@@ -15,6 +15,9 @@
 *.elf
 *.map
 
+# Локальные тестовые файлы KSD/SD
+/logs/
+
 # Секреты: Wi-Fi креды — в src/wifi_cfg.h (генерится локально) и /flash/wifi.json, не в git
 wifi.json
 **/wifi.json
