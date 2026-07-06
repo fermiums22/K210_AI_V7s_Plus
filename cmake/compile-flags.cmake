@@ -18,12 +18,11 @@ add_compile_flags(LD
 # C Flags Settings
 add_compile_flags(BOTH
         -mcmodel=medany
-		-march=rv64imafdc
+        -march=rv64imafdc
         -fno-common
         -ffunction-sections
         -fdata-sections
         -fstrict-volatile-bitfields
-        -fno-zero-initialized-in-bss
         -O2
         -ggdb
         )
