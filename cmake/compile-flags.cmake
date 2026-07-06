@@ -1,3 +1,7 @@
+if (NOT K210_LINKER_SCRIPT)
+    set(K210_LINKER_SCRIPT "${SDK_ROOT}/lds/kendryte.ld")
+endif ()
+
 add_compile_flags(LD
         -nostartfiles
         -static
@@ -8,7 +12,7 @@ add_compile_flags(LD
         -Wl,--no-whole-archive
         -Wl,--end-group
         -Wl,-EL
-        "-T \"${SDK_ROOT}/lds/kendryte.ld\""
+        "-T \"${K210_LINKER_SCRIPT}\""
         )
 
 # C Flags Settings
@@ -49,4 +53,3 @@ if (BUILDING_SDK)
 else ()
     add_compile_flags(BOTH -L"${SDK_ROOT}/include/")
 endif ()
-
