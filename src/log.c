@@ -9,14 +9,39 @@
 
 static volatile uarths_t *const REG_UARTHS = (volatile uarths_t *)UARTHS_BASE_ADDR;
 
-static void uarths_set_baud(uint32_t baud)
+/*
+ * After bootloader jump the SDK clock registers can report the IN0 26 MHz path
+ * even while the UARTHS divider is effectively driven from the normal K210 CPU
+ * clock domain.  In that case freq / 921600 gives a tiny divider and the host
+ * sees garbage.  Treat low reported CPU clocks as unreliable and use the normal
+ * Maix/K210 390 MHz CPU clock for the debug/service UARTHS divider.
+ */
+#define K210_APP_CPU_HZ_FALLBACK 390000000u
+#define K210_APP_CPU_HZ_MIN_OK   100000000u
+
+static uint32_t s_log_cpu_hz;
+static uint32_t s_log_div;
+static uint32_t s_log_reported_cpu_hz;
+
+static uint32_t app_uart_clock_hz(void)
 {
     uint32_t freq = sysctl_clock_get_freq(SYSCTL_CLOCK_CPU);
+    s_log_reported_cpu_hz = freq;
+    if (freq < K210_APP_CPU_HZ_MIN_OK)
+        freq = K210_APP_CPU_HZ_FALLBACK;
+    s_log_cpu_hz = freq;
+    return freq;
+}
+
+static void uarths_set_baud(uint32_t baud)
+{
+    uint32_t freq = app_uart_clock_hz();
     uint32_t div = freq / baud;
     if (div > 0)
         div--;
     if (div > 0xffffu)
         div = 0xffffu;
+    s_log_div = div;
     REG_UARTHS->div.div = (uint16_t)div;
 }
 
@@ -48,4 +73,13 @@ void log_printf(const char *fmt, ...)
     buf[sizeof(buf) - 1] = 0;
     uarths_puts(buf);
     uarths_puts("\r\n");
+}
+
+void log_dump_uart_clock(void)
+{
+    log_printf("[log] baud=%lu reported_cpu=%lu used_cpu=%lu div=%lu",
+               (unsigned long)APP_LOG_BAUD,
+               (unsigned long)s_log_reported_cpu_hz,
+               (unsigned long)s_log_cpu_hz,
+               (unsigned long)s_log_div);
 }
