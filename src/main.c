@@ -21,7 +21,7 @@ static void screen_clear(void)
 {
     lcd_clear(BLACK);
     lcd_draw_string_bg(0, 0, "K210 CAM/SD TEST", YELLOW, BLACK);
-    lcd_draw_string_bg(0, 16, "UART: COM12 921600", CYAN, BLACK);
+    lcd_draw_string_bg(0, 16, "UART: COM8 921600", CYAN, BLACK);
     s_row = 2;
 }
 
@@ -63,6 +63,7 @@ int main(void)
 {
     log_init();
     LOG("[stack] K210 camera/SD test boot");
+    log_dump_uart_clock();
     ok("UART LOG PC");
 
     amp_init();
