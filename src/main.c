@@ -62,6 +62,8 @@ static void ok(const char *s)
 
 int main(void)
 {
+    uint32_t alive = 0;
+
     app_clock_init();
     log_init();
     LOG("[stack] K210 camera/SD test boot");
@@ -85,6 +87,7 @@ int main(void)
 
     for (;;) {
         amp_set(false);
+        LOGF("[app] alive %lu", (unsigned long)alive++);
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
