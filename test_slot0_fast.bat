@@ -10,7 +10,7 @@ set "PORT=%~1"
 if "%PORT%"=="" set "PORT=COM8"
 
 set "KFLASH_BAUD=1500000"
-set "MONITOR_BAUD=921600"
+set "MONITOR_BAUD=115200"
 set "MONITOR_SECONDS=45"
 
 echo === K210 app slot0 FAST test ===
