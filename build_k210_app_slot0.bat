@@ -17,11 +17,21 @@ set "MAKE=%TC%\mingw32-make.exe"
 if not exist "%MAKE%" set "MAKE=C:\msys64\mingw64\bin\mingw32-make.exe"
 set "WIFI_CFG=%CD%\src\wifi_cfg.h"
 
+rem CMake treats backslashes inside linker flag strings as escapes.
+rem Keep Windows file checks above, but pass only forward-slash paths into CMake.
+set "SRC_CMAKE=%CD:\=/%"
+set "BUILD_CMAKE=%BUILD:\=/%"
+set "SDK_CMAKE=%SDK:\=/%"
+set "TC_CMAKE=%TC:\=/%"
+set "MAKE_CMAKE=%MAKE:\=/%"
+set "APP_SLOT0_LD=%SRC_CMAKE%/lds/kendryte_app_slot0.ld"
+
 echo === K210 app slot0 build ===
 echo Repo:  %CD%
 echo TC:    %TC%
 echo MAKE:  %MAKE%
 echo BUILD: %BUILD%
+echo LD:    %APP_SLOT0_LD%
 echo.
 
 if not exist "%TC%" (
@@ -53,7 +63,7 @@ if errorlevel 1 exit /b 1
 if not exist "%BUILD%" mkdir "%BUILD%"
 
 echo [cmake] configuring slot0...
-cmake -S . -B "%BUILD%" -G "MinGW Makefiles" -DCMAKE_MAKE_PROGRAM="%MAKE%" -DTOOLCHAIN="%TC%" -DSDK_ROOT="%SDK%" -DK210_LINKER_SCRIPT="%CD%/lds/kendryte_app_slot0.ld" -DK210_APP_SLOT0=1 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake -S . -B "%BUILD_CMAKE%" -G "MinGW Makefiles" -DCMAKE_MAKE_PROGRAM="%MAKE_CMAKE%" -DTOOLCHAIN="%TC_CMAKE%" -DSDK_ROOT="%SDK_CMAKE%" -DK210_LINKER_SCRIPT="%APP_SLOT0_LD%" -DK210_APP_SLOT0=1 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 if errorlevel 1 exit /b 1
 
 echo [make] building slot0...
