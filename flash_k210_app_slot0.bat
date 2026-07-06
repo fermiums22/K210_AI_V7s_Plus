@@ -76,18 +76,13 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [kflash] flashing slot0 with -a %APP_SLOT_OFFSET%...
-py -3 -m kflash -p %PORT% -b %KFLASH_BAUD% -B dan -a %APP_SLOT_OFFSET% "%BIN%"
+echo [kflash] flashing slot0 with -A %APP_SLOT_OFFSET%...
+py -3 -m kflash -p %PORT% -b %KFLASH_BAUD% -B dan -A %APP_SLOT_OFFSET% "%BIN%"
 if errorlevel 1 (
   echo.
-  echo [kflash] -a failed, retrying with --address %APP_SLOT_OFFSET%...
-  py -3 -m kflash -p %PORT% -b %KFLASH_BAUD% -B dan --address %APP_SLOT_OFFSET% "%BIN%"
-  if errorlevel 1 (
-    echo.
-    echo ERROR: K210 app slot0 flash failed.
-    echo Check installed kflash offset syntax. Required slot offset: %APP_SLOT_OFFSET%.
-    exit /b 1
-  )
+  echo ERROR: K210 app slot0 flash failed with kflash -A %APP_SLOT_OFFSET%.
+  echo Your installed kflash help shows address option as: -A ADDR
+  exit /b 1
 )
 
 echo.
