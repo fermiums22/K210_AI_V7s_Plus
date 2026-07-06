@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "amp.h"
+#include "app_clock.h"
 #include "log.h"
 #include "lcd.h"
 #include "sd.h"
@@ -61,6 +62,7 @@ static void ok(const char *s)
 
 int main(void)
 {
+    app_clock_init();
     log_init();
     LOG("[stack] K210 camera/SD test boot");
     log_dump_uart_clock();
