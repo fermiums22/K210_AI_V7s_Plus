@@ -53,7 +53,7 @@ if errorlevel 1 exit /b 1
 if not exist "%BUILD%" mkdir "%BUILD%"
 
 echo [cmake] configuring slot0...
-cmake -S . -B "%BUILD%" -G "MinGW Makefiles" -DCMAKE_MAKE_PROGRAM="%MAKE%" -DTOOLCHAIN="%TC%" -DSDK_ROOT="%SDK%" -DK210_LINKER_SCRIPT="%CD%/lds/kendryte_app_slot0.ld" -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+cmake -S . -B "%BUILD%" -G "MinGW Makefiles" -DCMAKE_MAKE_PROGRAM="%MAKE%" -DTOOLCHAIN="%TC%" -DSDK_ROOT="%SDK%" -DK210_LINKER_SCRIPT="%CD%/lds/kendryte_app_slot0.ld" -DK210_APP_SLOT0=1 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 if errorlevel 1 exit /b 1
 
 echo [make] building slot0...
