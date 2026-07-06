@@ -40,6 +40,14 @@ file(GLOB APP_SOURCES
     "${CMAKE_SOURCE_DIR}/src/*.S"
 )
 
+# The boot-app header must be present only in the slot0/chainloaded build.
+# A normal kflash image must still start with crt.S .text.start at 0x80000000.
+list(REMOVE_ITEM APP_SOURCES "${CMAKE_SOURCE_DIR}/src/boot_app_header.S")
+if (K210_APP_SLOT0)
+    list(APPEND APP_SOURCES "${CMAKE_SOURCE_DIR}/src/boot_app_header.S")
+    add_definitions(-DK210_APP_SLOT0=1)
+endif ()
+
 add_executable(robot_show ${APP_SOURCES})
 
 target_include_directories(robot_show PRIVATE
