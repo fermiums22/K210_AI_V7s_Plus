@@ -83,7 +83,7 @@ if not exist "%BUILD%\robot_show.bin" (
 )
 copy /Y "%BUILD%\robot_show.bin" "%BUILD%\k210_app_slot0.bin" >nul
 
-py -3 tools\print_slot0_header.py "%BUILD%\k210_app_slot0.bin"
+py -3 tools\print_slot0_header.py --pad "%BUILD%\k210_app_slot0.bin"
 if errorlevel 1 exit /b 1
 
 echo.
