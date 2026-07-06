@@ -51,12 +51,14 @@ exit /b 2
 :args_done
 
 set "BIN=%CD%\build_app_slot0\k210_app_slot0.bin"
+set "PKG=%CD%\build_app_slot0\k210_app_slot0.kfpkg"
 
 echo === K210 app slot0 flash ===
 echo Repo:   %CD%
 echo Port:   %PORT%
 echo Baud:   %KFLASH_BAUD%
 echo Offset: %APP_SLOT_OFFSET%
+echo Method: kfpkg flash-list address, NOT kflash -A
 echo.
 
 if "%NO_BUILD%"=="0" (
@@ -76,12 +78,14 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [kflash] flashing slot0 with -A %APP_SLOT_OFFSET%...
-py -3 -m kflash -p %PORT% -b %KFLASH_BAUD% -B dan -A %APP_SLOT_OFFSET% "%BIN%"
+py -3 tools\make_k210_slot_kfpkg.py --bin "%BIN%" --address %APP_SLOT_OFFSET% --out "%PKG%"
+if errorlevel 1 exit /b 1
+
+echo [kflash] flashing slot0 package at %APP_SLOT_OFFSET%...
+py -3 -m kflash -p %PORT% -b %KFLASH_BAUD% -B dan "%PKG%"
 if errorlevel 1 (
   echo.
-  echo ERROR: K210 app slot0 flash failed with kflash -A %APP_SLOT_OFFSET%.
-  echo Your installed kflash help shows address option as: -A ADDR
+  echo ERROR: K210 app slot0 kfpkg flash failed.
   exit /b 1
 )
 
