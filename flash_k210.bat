@@ -2,6 +2,10 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 
+chcp 65001 >nul
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+
 set "PORT=%~1"
 if "%PORT%"=="" set "PORT=COM12"
 set "NO_BUILD=0"
@@ -33,9 +37,11 @@ echo Port: %PORT%
 echo Baud: %KFLASH_BAUD%
 echo.
 
-rem Enable ANSI/VT escape handling in the current Windows console so kflash
-rem progress and INFO lines are actually colored instead of printed as ←[32m.
-py -3 -c "import ctypes; k=ctypes.windll.kernel32; h=k.GetStdHandle(-11); m=ctypes.c_uint(); k.GetConsoleMode(h, ctypes.byref(m)); k.SetConsoleMode(h, m.value | 4)" >nul 2>nul
+rem Enable ANSI/VT escape handling in the current Windows console.  kflash uses
+rem ANSI on both stdout and stderr, so enable both handles and set the registry
+rem default for newly opened classic cmd windows too.
+reg add HKCU\Console /v VirtualTerminalLevel /t REG_DWORD /d 1 /f >nul 2>nul
+py -3 -c "import ctypes; k=ctypes.windll.kernel32; ENABLE=4; handles=(-11,-12); mode=ctypes.c_uint(); [k.SetConsoleMode(k.GetStdHandle(h), (k.GetConsoleMode(k.GetStdHandle(h), ctypes.byref(mode)) and (mode.value|ENABLE)) or (mode.value|ENABLE)) for h in handles]" >nul 2>nul
 
 if "%NO_BUILD%"=="0" (
   call build_k210.bat
