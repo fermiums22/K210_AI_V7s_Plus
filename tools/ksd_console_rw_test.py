@@ -30,7 +30,7 @@ def make_payload(size: int) -> bytes:
 
 class Ksd:
     def __init__(self, port: str, baud: int, max_lines: int):
-        self.ser = serial.Serial(port=port, baudrate=baud, timeout=1.0, write_timeout=5.0)
+        self.ser = serial.Serial(port=port, baudrate=baud, timeout=3.0, write_timeout=5.0)
         self.ser.dtr = False
         self.ser.rts = False
         self.max_lines = max_lines
