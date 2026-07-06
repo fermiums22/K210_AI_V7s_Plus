@@ -2,8 +2,15 @@
 setlocal
 cd /d "%~dp0"
 
-set "SDK=C:\K210\sdk\kendryte-freertos-sdk-0.7.0"
-set "TC=C:\K210\toolchain\kendryte-toolchain\bin"
+set "SDK=%K210_SDK%"
+if "%SDK%"=="" if exist "C:\K210\sdk\kendryte-freertos-sdk-0.7.0" set "SDK=C:\K210\sdk\kendryte-freertos-sdk-0.7.0"
+if "%SDK%"=="" if exist "%CD%\firmware\sdk-freertos" set "SDK=%CD%\firmware\sdk-freertos"
+if "%SDK%"=="" set "SDK=C:\K210\sdk\kendryte-freertos-sdk-0.7.0"
+
+set "TC=%K210_TC%"
+if "%TC%"=="" if exist "C:\K210\toolchain\kendryte-toolchain\bin\riscv64-unknown-elf-gcc.exe" set "TC=C:\K210\toolchain\kendryte-toolchain\bin"
+if "%TC%"=="" if exist "%CD%\toolchain\kendryte-toolchain\bin\riscv64-unknown-elf-gcc.exe" set "TC=%CD%\toolchain\kendryte-toolchain\bin"
+if "%TC%"=="" set "TC=C:\K210\toolchain\kendryte-toolchain\bin"
 set "BUILD=%CD%\build"
 set "MAKE=%TC%\mingw32-make.exe"
 if not exist "%MAKE%" set "MAKE=C:\msys64\mingw64\bin\mingw32-make.exe"
