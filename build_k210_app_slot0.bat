@@ -76,7 +76,7 @@ if not exist "%BUILD%\robot_show.bin" (
 )
 copy /Y "%BUILD%\robot_show.bin" "%BUILD%\k210_app_slot0.bin" >nul
 
-py -3 -c "from pathlib import Path; import struct; p=Path(r'%BUILD%\k210_app_slot0.bin'); b=p.read_bytes(); vals=struct.unpack_from('<8I', b, 0); print('APP_SLOT0_BIN_SIZE %d' % len(b)); print('APP_SLOT0_HDR magic=0x%08x load=0x%08x entry=0x%08x image_size=%d' % (vals[0], vals[2], vals[3], vals[4]))"
+py -3 tools\print_slot0_header.py "%BUILD%\k210_app_slot0.bin"
 if errorlevel 1 exit /b 1
 
 echo.
