@@ -66,8 +66,15 @@ echo [cmake] configuring slot0...
 cmake -S . -B "%BUILD_CMAKE%" -G "MinGW Makefiles" -DCMAKE_MAKE_PROGRAM="%MAKE_CMAKE%" -DTOOLCHAIN="%TC_CMAKE%" -DSDK_ROOT="%SDK_CMAKE%" -DK210_LINKER_SCRIPT="%APP_SLOT0_LD%" -DK210_APP_SLOT0=1 -DCMAKE_POLICY_VERSION_MINIMUM=3.5
 if errorlevel 1 exit /b 1
 
-echo [make] building slot0...
-"%MAKE%" -C "%BUILD%" -j4
+rem The slot linker script contains _app_image_size.  CMake/MinGW does not
+rem always relink when only this generated linker script changes, so remove
+rem the final executable/bin only.  Objects and libraries stay incremental.
+if exist "%BUILD%\robot_show" del /q "%BUILD%\robot_show"
+if exist "%BUILD%\robot_show.bin" del /q "%BUILD%\robot_show.bin"
+if exist "%BUILD%\k210_app_slot0.bin" del /q "%BUILD%\k210_app_slot0.bin"
+
+echo [make] relinking slot0 target...
+"%MAKE%" -C "%BUILD%" -j4 robot_show
 if errorlevel 1 exit /b 1
 
 if not exist "%BUILD%\robot_show.bin" (
