@@ -64,8 +64,18 @@ int main(void)
 {
     uint32_t alive = 0;
 
+#ifdef K210_APP_SLOT0
+    /* Chainloaded slot0 path: first prove that C main was reached.
+     * Do not reprogram PLLs before the first UART log. */
+    log_init();
+    LOG("[slot0] app main entered");
+    log_dump_uart_clock();
+    LOG("[slot0] app_clock_init skipped");
+#else
     app_clock_init();
     log_init();
+#endif
+
     LOG("[stack] K210 camera/SD test boot");
     log_dump_uart_clock();
     ok("UART LOG PC");
