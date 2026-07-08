@@ -24,7 +24,6 @@ include_directories(
 
 # ── Third-party ────────────────────────────────────────────────────────────────
 add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/fatfs" "${CMAKE_BINARY_DIR}/fatfs")
-add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/lwip"  "${CMAKE_BINARY_DIR}/lwip")
 add_subdirectory("${CMAKE_SOURCE_DIR}/third_party/esp_serial_flasher" "${CMAKE_BINARY_DIR}/esp_serial_flasher")
 
 # ── SDK libraries ──────────────────────────────────────────────────────────────
@@ -32,7 +31,6 @@ add_subdirectory("${CMAKE_SOURCE_DIR}/lib/hal"      "${CMAKE_BINARY_DIR}/hal")
 add_subdirectory("${CMAKE_SOURCE_DIR}/lib/freertos" "${CMAKE_BINARY_DIR}/freertos")
 add_subdirectory("${CMAKE_SOURCE_DIR}/lib/bsp"      "${CMAKE_BINARY_DIR}/bsp")
 add_subdirectory("${CMAKE_SOURCE_DIR}/lib/drivers"  "${CMAKE_BINARY_DIR}/drivers")
-add_subdirectory("${CMAKE_SOURCE_DIR}/lib/posix"    "${CMAKE_BINARY_DIR}/posix")
 
 # ── Our application sources ────────────────────────────────────────────────────
 file(GLOB APP_SOURCES
@@ -61,12 +59,11 @@ target_include_directories(robot_show PRIVATE
     "${CMAKE_SOURCE_DIR}/lib/freertos/conf"
     "${CMAKE_SOURCE_DIR}/lib/freertos/portable"
     "${CMAKE_SOURCE_DIR}/third_party/fatfs/source"
-    "${CMAKE_SOURCE_DIR}/third_party/lwip/src/include"
 )
 
 target_link_libraries(robot_show
     -Wl,--start-group
-    m freertos atomic bsp c stdc++ drivers hal posix fatfs lwipcore esp_serial_flasher
+    m freertos atomic bsp c stdc++ drivers hal fatfs esp_serial_flasher
     -Wl,--end-group
 )
 
