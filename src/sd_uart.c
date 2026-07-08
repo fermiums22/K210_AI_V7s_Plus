@@ -518,6 +518,7 @@ static void help_command(void)
 {
     host_puts("KSD:HELP HELP SELFTEST LCD_TEST AMP_TEST SD_TEST CAM_TEST MIC_TEST\n");
     host_puts("KSD:HELP CAM_CAPTURE [path] GET <path> PUT <path> <size> FORMAT_SD FLASH_ESP RUN_SPI RESET DONE\n");
+    host_puts("KSD:HELP WIFI PUT app_slot0.bin to flash K210 slot0 after RUN_SPI\n");
     host_puts("KSD:HELP_END\n");
 }
 

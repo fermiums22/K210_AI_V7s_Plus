@@ -4,6 +4,7 @@
 #include "amp.h"
 #include "esp_uart_log.h"
 #include "sd.h"
+#include "app_flash.h"
 
 #include <FreeRTOS.h>
 #include <task.h>
@@ -14,6 +15,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sysctl.h>
 
 #define FRAME_MAGIC          0x5053454bu /* bytes on wire: 4b 45 53 50 == "KESP" */
 #define RX_MAX               96
@@ -466,6 +468,16 @@ static int rx_end(file_rx_t *rx, const kesp_frame_t *f)
     }
     LOGF("[wifi-sd] WIFI_SD_OK %s %lu bytes frames=%lu", rx->rel_path,
          (unsigned long)rx->written, (unsigned long)rx->frames);
+    if (strcmp(rx->name, "app_slot0.bin") == 0 || strcmp(rx->name, "k210_app_slot0.bin") == 0) {
+        LOGF("[wifi-sd] WIFI_APP_FLASH_BEGIN %s", rx->rel_path);
+        if (app_flash_slot0_from_sd(rx->rel_path, true)) {
+            LOG("[wifi-sd] WIFI_APP_FLASH_OK reset");
+            vTaskDelay(pdMS_TO_TICKS(300));
+            sysctl_reset(SYSCTL_RESET_SOC);
+        } else {
+            LOG("[wifi-sd] WIFI_APP_FLASH_FAIL");
+        }
+    }
     return 1;
 }
 
