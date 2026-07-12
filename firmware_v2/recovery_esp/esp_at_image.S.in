@@ -1,0 +1,8 @@
+    .section .rodata.esp_at_image,"a",@progbits
+    .balign 16
+    .global esp_at_full_start
+    .global esp_at_full_end
+esp_at_full_start:
+    .incbin "@ESP_AT_FULL_BIN_ASM@"
+esp_at_full_end:
+    .balign 16

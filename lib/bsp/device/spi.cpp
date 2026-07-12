@@ -28,6 +28,7 @@
 using namespace sys;
 
 #define SPI_TRANSMISSION_THRESHOLD 0x800UL
+#define SPI_FAST_DMA_MAX_FRAMES 128UL
 /* SPI Controller */
 
 #define TMOD_MASK (3 << tmod_off_)
@@ -58,6 +59,18 @@ public:
 
     virtual void on_last_close() override
     {
+        if (fast_dma_tx_)
+            dma_close(fast_dma_tx_);
+        if (fast_dma_rx_)
+            dma_close(fast_dma_rx_);
+        if (fast_dma_tx_done_)
+            vSemaphoreDelete(fast_dma_tx_done_);
+        if (fast_dma_rx_done_)
+            vSemaphoreDelete(fast_dma_rx_done_);
+        fast_dma_tx_ = 0;
+        fast_dma_rx_ = 0;
+        fast_dma_tx_done_ = nullptr;
+        fast_dma_rx_done_ = nullptr;
         sysctl_clock_disable(clock_);
     }
 
@@ -73,6 +86,20 @@ public:
 
 private:
     void setup_device(k_spi_device_driver &device);
+
+    void ensure_fast_dma()
+    {
+        if (fast_dma_tx_)
+            return;
+        fast_dma_tx_ = dma_open_free();
+        fast_dma_rx_ = dma_open_free();
+        fast_dma_tx_done_ = xSemaphoreCreateBinary();
+        fast_dma_rx_done_ = xSemaphoreCreateBinary();
+        configASSERT(fast_dma_tx_ && fast_dma_rx_ &&
+                     fast_dma_tx_done_ && fast_dma_rx_done_);
+        dma_set_request_source(fast_dma_rx_, dma_req_);
+        dma_set_request_source(fast_dma_tx_, dma_req_ + 1);
+    }
 
     static void write_inst_addr(volatile uint32_t *dr, const uint8_t **buffer, size_t width)
     {
@@ -102,6 +129,12 @@ private:
     uint8_t frf_off_;
 
     SemaphoreHandle_t free_mutex_;
+    handle_t fast_dma_tx_ = 0;
+    handle_t fast_dma_rx_ = 0;
+    SemaphoreHandle_t fast_dma_tx_done_ = nullptr;
+    SemaphoreHandle_t fast_dma_rx_done_ = nullptr;
+    uint32_t fast_dma_tx_words_[SPI_FAST_DMA_MAX_FRAMES];
+    uint32_t fast_dma_rx_words_[SPI_FAST_DMA_MAX_FRAMES];
 };
 
 /* SPI Device */
@@ -315,7 +348,23 @@ int k_spi_driver::write(k_spi_device_driver &device, gsl::span<const uint8_t> bu
     auto buffer_write = buffer.data();
     set_bit_mask(&spi_.ctrlr0, TMOD_MASK, TMOD_VALUE(1));
 
-    if (tx_frames < SPI_TRANSMISSION_THRESHOLD)
+    if (device.buffer_width_ == 1 && tx_frames >= 64 &&
+        tx_frames <= SPI_FAST_DMA_MAX_FRAMES)
+    {
+        ensure_fast_dma();
+        for (size_t index = 0; index < tx_frames; ++index)
+            fast_dma_tx_words_[index] = buffer_write[index];
+        spi_.dmatdlr = 0x10;
+        spi_.dmacr = 0x2;
+        spi_.ssienr = 0x01;
+        (void)xSemaphoreTake(fast_dma_tx_done_, 0);
+        dma_transmit_async(fast_dma_tx_, fast_dma_tx_words_, &spi_.dr[0],
+                           1, 0, sizeof(uint32_t), tx_frames, 4,
+                           fast_dma_tx_done_);
+        spi_.ser = device.chip_select_mask_;
+        configASSERT(xSemaphoreTake(fast_dma_tx_done_, portMAX_DELAY) == pdTRUE);
+    }
+    else if (tx_frames < SPI_TRANSMISSION_THRESHOLD)
     {
         size_t index, fifo_len;
         spi_.ssienr = 0x01;
@@ -396,7 +445,31 @@ int k_spi_driver::read_write(k_spi_device_driver &device, gsl::span<const uint8_
     auto buffer_write = write_buffer.data();
     uint32_t i = 0;
 
-    if (rx_frames < SPI_TRANSMISSION_THRESHOLD)
+    if (device.buffer_width_ == 1 && rx_frames >= 64 &&
+        rx_frames <= SPI_FAST_DMA_MAX_FRAMES &&
+        tx_frames <= SPI_FAST_DMA_MAX_FRAMES)
+    {
+        ensure_fast_dma();
+        for (size_t index = 0; index < tx_frames; ++index)
+            fast_dma_tx_words_[index] = buffer_write[index];
+        spi_.ctrlr1 = rx_frames - 1;
+        spi_.dmacr = 0x3;
+        spi_.ssienr = 0x01;
+        (void)xSemaphoreTake(fast_dma_rx_done_, 0);
+        (void)xSemaphoreTake(fast_dma_tx_done_, 0);
+        dma_transmit_async(fast_dma_rx_, &spi_.dr[0], fast_dma_rx_words_,
+                           0, 1, sizeof(uint32_t), rx_frames, 1,
+                           fast_dma_rx_done_);
+        dma_transmit_async(fast_dma_tx_, fast_dma_tx_words_, &spi_.dr[0],
+                           1, 0, sizeof(uint32_t), tx_frames, 4,
+                           fast_dma_tx_done_);
+        spi_.ser = device.chip_select_mask_;
+        configASSERT(xSemaphoreTake(fast_dma_rx_done_, portMAX_DELAY) == pdTRUE &&
+                     xSemaphoreTake(fast_dma_tx_done_, portMAX_DELAY) == pdTRUE);
+        for (size_t index = 0; index < rx_frames; ++index)
+            buffer_read[index] = (uint8_t)fast_dma_rx_words_[index];
+    }
+    else if (rx_frames < SPI_TRANSMISSION_THRESHOLD)
     {
         size_t index, fifo_len;
         spi_.ctrlr1 = rx_frames - 1;

@@ -1,0 +1,37 @@
+    .section .rodata.esp_v2_images,"a",@progbits
+    .balign 16
+
+    .global esp_v2_boot_start
+    .global esp_v2_boot_end
+esp_v2_boot_start:
+    .incbin "@ESP_BOOT_BIN_ASM@"
+esp_v2_boot_end:
+    .balign 16
+
+    .global esp_v2_part_start
+    .global esp_v2_part_end
+esp_v2_part_start:
+    .incbin "@ESP_PART_BIN_ASM@"
+esp_v2_part_end:
+    .balign 16
+
+    .global esp_v2_app_start
+    .global esp_v2_app_end
+esp_v2_app_start:
+    .incbin "@ESP_APP_BIN_ASM@"
+esp_v2_app_end:
+    .balign 16
+
+    .global esp_v2_phy_init_start
+    .global esp_v2_phy_init_end
+esp_v2_phy_init_start:
+    .incbin "@ESP_PHY_INIT_BIN_ASM@"
+esp_v2_phy_init_end:
+    .balign 16
+
+    .global esp_v2_sys_param_blank_start
+    .global esp_v2_sys_param_blank_end
+esp_v2_sys_param_blank_start:
+    .incbin "@ESP_SYS_PARAM_BLANK_BIN_ASM@"
+esp_v2_sys_param_blank_end:
+    .balign 16

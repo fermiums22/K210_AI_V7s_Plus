@@ -1,4 +1,5 @@
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 3.10)
+cmake_policy(VERSION 3.10)
 project(hello C ASM)
 
 set(SDK_ROOT "C:/K210/sdk/kendryte-freertos-sdk-0.7.0")

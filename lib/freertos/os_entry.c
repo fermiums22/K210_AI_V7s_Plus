@@ -70,7 +70,9 @@ int os_entry(int core_id, int number_of_cores, int (*user_main)(int, char **))
             return -1;
         }
 
+#if !defined(K210_RECOVERY_SINGLE_CORE)
         enable_core(1);
+#endif
         start_scheduler(core_id);
         return param.ret;
     }
