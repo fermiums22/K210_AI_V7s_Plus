@@ -22,6 +22,13 @@ esp_v2_app_start:
 esp_v2_app_end:
     .balign 16
 
+    .global esp_v2_ota_data_start
+    .global esp_v2_ota_data_end
+esp_v2_ota_data_start:
+    .incbin "@ESP_OTA_DATA_BIN_ASM@"
+esp_v2_ota_data_end:
+    .balign 16
+
     .global esp_v2_phy_init_start
     .global esp_v2_phy_init_end
 esp_v2_phy_init_start:

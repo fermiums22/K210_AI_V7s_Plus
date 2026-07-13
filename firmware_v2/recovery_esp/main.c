@@ -51,6 +51,8 @@ extern const uint8_t esp_v2_part_start[];
 extern const uint8_t esp_v2_part_end[];
 extern const uint8_t esp_v2_app_start[];
 extern const uint8_t esp_v2_app_end[];
+extern const uint8_t esp_v2_ota_data_start[];
+extern const uint8_t esp_v2_ota_data_end[];
 extern const uint8_t esp_v2_phy_init_start[];
 extern const uint8_t esp_v2_phy_init_end[];
 extern const uint8_t esp_v2_sys_param_blank_start[];
@@ -131,9 +133,19 @@ static void halt_forever(uint32_t code)
 
 static void pass_forever(const char *state)
 {
+    handle_t uart = io_open("/dev/uart2");
+    if (uart)
+        uart_config(uart, 115200u, 8, UART_STOP_1, UART_PARITY_NONE);
     for (;;) {
         log_line("RECOVERY:PASS %s", state);
-        vTaskDelay(ticks_at_least_one(1000));
+        TickType_t deadline = xTaskGetTickCount() + ticks_at_least_one(1000);
+        while ((int32_t)(deadline - xTaskGetTickCount()) > 0) {
+            uint8_t byte;
+            if (uart && io_read(uart, &byte, 1) > 0)
+                uarths_write_byte(byte);
+            else
+                taskYIELD();
+        }
     }
 }
 
@@ -594,6 +606,7 @@ int main(void)
     const embedded_part_t parts[] = {
         { "bootloader", 0x000000u, esp_v2_boot_start, esp_v2_boot_end },
         { "partitions", 0x008000u, esp_v2_part_start, esp_v2_part_end },
+        { "ota_data", 0x00d000u, esp_v2_ota_data_start, esp_v2_ota_data_end },
         { "application", 0x010000u, esp_v2_app_start, esp_v2_app_end },
         { "phy_init", 0x0fc000u, esp_v2_phy_init_start, esp_v2_phy_init_end },
         { "sys_param_blank", 0x0fe000u, esp_v2_sys_param_blank_start, esp_v2_sys_param_blank_end },

@@ -381,6 +381,20 @@ static void transport_task(void *arg)
             send_response(KSTREAM_V2_RESULT_BAD_CRC, "bad command crc");
             continue;
         }
+        if (s_command.opcode == KSTREAM_V2_OP_ACTIVATE_INT &&
+            s_command.flags == KSTREAM_V2_INT_MODE_TOGGLE &&
+            s_command.arg0 == KSTREAM_V2_INT_EVENT_PHASE_ARMED &&
+            s_command.arg1 == KSTREAM_V2_INT_BOOT_LEVEL_HIGH) {
+            taskENTER_CRITICAL();
+            s_downlink.read_count = s_downlink.write_count;
+            s_uplink.read_count = s_uplink.write_count;
+            s_console_rx.read_count = s_console_rx.write_count;
+            taskEXIT_CRITICAL();
+            s_expected_sequence = s_command.sequence;
+            s_activated = true;
+            send_response(KSTREAM_V2_RESULT_OK, "int active");
+            continue;
+        }
         if (s_command.sequence != s_expected_sequence + 1u) {
             ++s_faults;
             send_response(KSTREAM_V2_RESULT_BAD_SEQUENCE, "bad sequence");
@@ -388,24 +402,12 @@ static void transport_task(void *arg)
         }
         s_expected_sequence = s_command.sequence;
         if (!s_activated) {
-            if (s_command.opcode != KSTREAM_V2_OP_ACTIVATE_INT ||
-                s_command.flags != KSTREAM_V2_INT_MODE_TOGGLE ||
-                s_command.arg0 != KSTREAM_V2_INT_EVENT_PHASE_ARMED ||
-                s_command.arg1 != KSTREAM_V2_INT_BOOT_LEVEL_HIGH) {
-                ++s_faults;
-                /* There is intentionally no response edge before a valid
-                 * activation descriptor.  GPIO0 remains a stable boot HIGH. */
-                continue;
-            }
-            s_activated = true;
-            send_response(KSTREAM_V2_RESULT_OK, "int active");
+            ++s_faults;
+            /* There is intentionally no response edge before a valid
+             * activation descriptor.  GPIO0 remains a stable boot HIGH. */
             continue;
         }
         switch (s_command.opcode) {
-        case KSTREAM_V2_OP_ACTIVATE_INT:
-            ++s_faults;
-            send_response(KSTREAM_V2_RESULT_BUSY, "int already active");
-            break;
         case KSTREAM_V2_OP_HELLO:
             send_response(KSTREAM_V2_RESULT_OK, "k210-spi-slave-v2");
             break;
