@@ -66,11 +66,14 @@ bool klink_v1_queue(klink_v1_endpoint_t *endpoint, uint8_t channel, uint8_t type
                     uint16_t flags, const void *payload, size_t size)
 {
     if (!endpoint || endpoint->fault != KLINK_FAULT_NONE ||
-        channel >= KLINK_V1_CHANNELS || type > 31u ||
-        (endpoint->tx_queued_mask & bit_for(channel)) != 0u)
+        channel >= KLINK_V1_CHANNELS || type > 31u)
         return false;
 
     klink_v1_cell_t *cell = &endpoint->queued[channel];
+    if ((endpoint->tx_queued_mask & bit_for(channel)) != 0u &&
+        (((cell->flags | flags) & KLINK_F_RELIABLE) != 0u))
+        return false;
+
     klink_v1_cell_clear(cell, channel, type);
     cell->flags = (uint16_t)(flags & ~(KLINK_F_ACK_VALID | KLINK_F_CREDIT_VALID));
     if (!klink_v1_cell_set_payload(cell, payload, size))

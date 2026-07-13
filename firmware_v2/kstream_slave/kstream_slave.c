@@ -14,6 +14,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "kstream_v2.h"
@@ -22,6 +23,7 @@
 #define PIN_SPI_CLK      1
 #define PIN_SPI_MISO     2
 #define PIN_SPI_MOSI     3
+#define PIN_MASTER_PHASE 7
 #define PIN_READY        15
 #define GPIO_READY       3
 #define GPIO_MASTER_INT  4
@@ -30,6 +32,7 @@
 #define UPLINK_BYTES     (64u * 1024u)
 #define CONSOLE_RX_BYTES (8u * 1024u)
 #define CONSOLE_TX_BYTES (8u * 1024u)
+#define TX_FIFO_BYTES     KSTREAM_V2_BURST_BYTES
 
 #define SSI_CTRLR0_TMOD_TX (1u << 8)
 #define SSI_CTRLR0_SLV_OE  (1u << 10)
@@ -56,23 +59,42 @@ static byte_ring_t s_console_rx = {s_console_rx_data, CONSOLE_RX_BYTES, 0, 0};
 static byte_ring_t s_console_tx = {s_console_tx_data, CONSOLE_TX_BYTES, 0, 0};
 static kstream_v2_command_t s_command __attribute__((aligned(64)));
 static kstream_v2_response_t s_response __attribute__((aligned(64)));
-static uint8_t s_rx_bounce[KSTREAM_V2_BURST_BYTES] __attribute__((aligned(64)));
-static handle_t s_dma;
-static SemaphoreHandle_t s_dma_done;
+static uint8_t s_command_wire[KSTREAM_V2_FRAME_BYTES]
+    __attribute__((aligned(64)));
+static uint8_t s_rx_bounce[KSTREAM_V2_BURST_BYTES + 4u]
+    __attribute__((aligned(64)));
+static handle_t s_dma_rx;
+static handle_t s_dma_tx;
+static SemaphoreHandle_t s_dma_rx_done;
+static SemaphoreHandle_t s_dma_tx_done;
+static SemaphoreHandle_t s_downlink_ready;
+static StaticSemaphore_t s_console_tx_mutex_storage;
+static SemaphoreHandle_t s_console_tx_mutex;
 static uint32_t s_ready_level = 1u;
 static bool s_int_active;
+static bool s_activated;
 static uint32_t s_expected_sequence;
 static uint32_t s_commands;
 static uint32_t s_faults;
+static uint32_t s_bad_magic;
+static uint32_t s_bad_crc;
+static uint32_t s_calculated_crc;
 static uint64_t s_downlink_bytes;
 static uint64_t s_uplink_bytes;
-static bool s_trace_tx;
-static bool s_trace_tx_used;
-
-static void trace_tx(const char *message)
+static void wait_master_int(bool high)
 {
-    if (s_trace_tx)
-        uarths_puts(message);
+    const uint32_t mask = 1u << GPIO_MASTER_INT;
+    while (((GPIOHS_REG->input_val.u32[0] & mask) != 0u) != high)
+        taskYIELD();
+}
+
+static void master_int_mode(void)
+{
+    fpioa_set_function(PIN_MASTER_PHASE,
+                       (fpioa_function_t)(FUNC_GPIOHS0 + GPIO_MASTER_INT));
+    fpioa_set_io_pull(PIN_MASTER_PHASE, FPIOA_PULL_UP);
+    GPIOHS_REG->output_en.u32[0] &= ~(1u << GPIO_MASTER_INT);
+    GPIOHS_REG->input_en.u32[0] |= 1u << GPIO_MASTER_INT;
 }
 
 static void ready_signal(void)
@@ -90,44 +112,57 @@ static void dma_phase(uint32_t request, const volatile void *source,
                       volatile void *destination, bool source_increment,
                       bool destination_increment, size_t words, bool transmit)
 {
-    (void)xSemaphoreTake(s_dma_done, 0u);
+    handle_t dma = transmit ? s_dma_tx : s_dma_rx;
+    SemaphoreHandle_t dma_done = transmit ? s_dma_tx_done : s_dma_rx_done;
+    (void)xSemaphoreTake(dma_done, 0u);
+    const uint32_t *tx_words = NULL;
     if (transmit) {
-        const uint32_t *tx_words = (const uint32_t *)source;
-        size_t preload = words < 4u ? words : 4u;
+        tx_words = (const uint32_t *)source;
+        SSI->dr[0] = UINT32_MAX;
+        size_t preload = words < 3u ? words : 3u;
         for (size_t i = 0u; i < preload; ++i)
             SSI->dr[0] = tx_words[i];
         tx_words += preload;
         words -= preload;
         if (words != 0u) {
-            dma_set_request_source(s_dma, request);
-            dma_transmit_async(s_dma, tx_words, destination, true, false,
-                               4u, words, 4u, s_dma_done);
+            dma_set_request_source(dma, request);
+            dma_transmit_async(dma, tx_words, destination, true, false,
+                               4u, words, 4u, dma_done);
         }
-        trace_tx("KSTREAM:TRACE TX_ARMED\r\n");
     } else {
-        dma_set_request_source(s_dma, request);
-        dma_transmit_async(s_dma, source, destination, source_increment,
-                           destination_increment, 4u, words, 4u, s_dma_done);
+        dma_set_request_source(dma, request);
+        dma_transmit_async(dma, source, destination, source_increment,
+                           destination_increment, 4u, words, 4u, dma_done);
     }
+    __sync_synchronize();
+    if (transmit && s_commands == 1u)
+        uarths_puts("KSTREAM:TX DMA_ARMED\r\n");
+    if (transmit)
+        wait_master_int(true);
+    if (transmit && s_commands == 1u)
+        uarths_puts("KSTREAM:TX MASTER_IDLE\r\n");
     ready_signal();
-    if (!transmit || words != 0u)
-        (void)xSemaphoreTake(s_dma_done, portMAX_DELAY);
+    if (transmit && s_commands == 1u)
+        uarths_puts("KSTREAM:TX RESPONSE_ARMED\r\n");
     if (transmit) {
-        trace_tx("KSTREAM:TRACE DMA_DONE\r\n");
-        /* DMA done only means that the TX FIFO owns the bytes.  ESP finishes
-         * the read with a LOW->HIGH token on the otherwise idle MOSI wire.
-         * This edge says the GPIO sampler is armed, so the short token cannot
-         * race the DMA completion wake-up. */
+        wait_master_int(false);
         ready_signal();
-        trace_tx("KSTREAM:TRACE ACK_ARMED\r\n");
-        while ((GPIOHS_REG->input_val.u32[0] &
-                (1u << GPIO_MASTER_INT)) != 0u)
-            ;
-        trace_tx("KSTREAM:TRACE ACK_LOW\r\n");
-        while ((GPIOHS_REG->input_val.u32[0] &
-                (1u << GPIO_MASTER_INT)) == 0u)
-            ;
-        trace_tx("KSTREAM:TRACE ACK_HIGH\r\n");
+        wait_master_int(true);
+        ready_signal();
+    }
+    if (transmit && words != 0u)
+        (void)xSemaphoreTake(dma_done, portMAX_DELAY);
+    else if (!transmit) {
+        (void)xSemaphoreTake(dma_done, portMAX_DELAY);
+        wait_master_int(false);
+        s_int_active = true;
+        ready_signal();
+        wait_master_int(true);
+    }
+    if (transmit) {
+        wait_master_int(false);
+        ready_signal();
+        wait_master_int(true);
     }
 }
 
@@ -207,11 +242,6 @@ static void spi_rx_dma_mode(void)
 static void spi_tx_mode(bool dma)
 {
     SSI->ssienr = 0u;
-    fpioa_set_function(PIN_SPI_MOSI,
-                       (fpioa_function_t)(FUNC_GPIOHS0 + GPIO_MASTER_INT));
-    fpioa_set_io_pull(PIN_SPI_MOSI, FPIOA_PULL_DOWN);
-    GPIOHS_REG->output_en.u32[0] &= ~(1u << GPIO_MASTER_INT);
-    GPIOHS_REG->input_en.u32[0] |= 1u << GPIO_MASTER_INT;
     fpioa_set_function(PIN_SPI_MISO, FUNC_SPI_SLAVE_D0);
     SSI->ctrlr0 = SSI_CTRLR0_TMOD_TX | SSI_CTRLR0_DFS_32;
     SSI->dmatdlr = 4u;
@@ -229,8 +259,13 @@ static void fill_status(kstream_v2_response_t *response, uint32_t sequence,
     response->result = result;
     response->sequence = sequence;
     response->downlink_free = ring_write_contiguous(&s_downlink) & ~3u;
-    response->uplink_used = ring_read_contiguous(&s_uplink) & ~3u;
-    response->console_tx_used = ring_read_contiguous(&s_console_tx) & ~3u;
+    uint32_t uplink_used = ring_read_contiguous(&s_uplink);
+    uint32_t console_tx_used = ring_read_contiguous(&s_console_tx);
+    response->uplink_used =
+        (uplink_used < TX_FIFO_BYTES ? uplink_used : TX_FIFO_BYTES) & ~3u;
+    response->console_tx_used =
+        (console_tx_used < TX_FIFO_BYTES ? console_tx_used : TX_FIFO_BYTES) &
+        ~3u;
     response->console_rx_free = ring_write_contiguous(&s_console_rx) & ~3u;
     response->faults = s_faults;
     if (message)
@@ -283,17 +318,15 @@ static void handle_push(void)
     }
 
     uint8_t *ring_destination = ring_write_pointer(ring);
-    bool direct = wire == s_command.length &&
-                  (((uintptr_t)ring_destination & 3u) == 0u);
-    uint8_t *dma_destination = direct ? ring_destination : s_rx_bounce;
     spi_rx_dma_mode();
     dma_phase(SYSCTL_DMA_SELECT_SSI2_RX_REQ, &SSI->dr[0],
-              dma_destination, false, true, wire / 4u, false);
-    if (!direct)
-        memcpy(ring_destination, s_rx_bounce, s_command.length);
+              s_rx_bounce, false, true, wire / 4u, false);
+    memcpy(ring_destination, s_rx_bounce, s_command.length);
     ring_write_commit(ring, s_command.length);
-    if (ring == &s_downlink)
+    if (ring == &s_downlink) {
         s_downlink_bytes += s_command.length;
+        (void)xSemaphoreGive(s_downlink_ready);
+    }
     send_response(KSTREAM_V2_RESULT_OK, "push complete");
 }
 
@@ -312,13 +345,8 @@ static void handle_pull(void)
     }
 
     spi_tx_mode(true);
-    if (!s_trace_tx_used && s_commands > 200u) {
-        s_trace_tx = true;
-        s_trace_tx_used = true;
-    }
     dma_phase(SYSCTL_DMA_SELECT_SSI2_TX_REQ, ring_read_pointer(ring),
               &SSI->dr[0], true, false, wire / 4u, true);
-    s_trace_tx = false;
     ring_read_commit(ring, wire);
     if (ring == &s_uplink)
         s_uplink_bytes += wire;
@@ -330,10 +358,25 @@ static void transport_task(void *arg)
     (void)arg;
     for (;;) {
         spi_command_mode();
-        dma_phase(SYSCTL_DMA_SELECT_SSI2_RX_REQ, &SSI->dr[0], &s_command,
-                  false, true, sizeof(s_command) / 4u, false);
+        dma_phase(SYSCTL_DMA_SELECT_SSI2_RX_REQ, &SSI->dr[0], s_command_wire,
+                  false, true, sizeof(s_command_wire) / 4u, false);
+        memcpy(&s_command, s_command_wire, sizeof(s_command));
         ++s_commands;
         if (!kstream_v2_command_valid(&s_command)) {
+            s_bad_magic = s_command.magic;
+            s_bad_crc = s_command.crc32;
+            s_calculated_crc = kstream_v2_crc32(
+                &s_command, offsetof(kstream_v2_command_t, crc32));
+            char line[160];
+            snprintf(line, sizeof(line),
+                     "KSTREAM:BAD_CMD magic=%08lx seq=%lu crc=%08lx calc=%08lx op=%u\r\n",
+                     (unsigned long)s_command.magic,
+                     (unsigned long)s_command.sequence,
+                     (unsigned long)s_command.crc32,
+                     (unsigned long)kstream_v2_crc32(
+                         &s_command, offsetof(kstream_v2_command_t, crc32)),
+                     (unsigned)s_command.opcode);
+            uarths_puts(line);
             ++s_faults;
             send_response(KSTREAM_V2_RESULT_BAD_CRC, "bad command crc");
             continue;
@@ -344,7 +387,7 @@ static void transport_task(void *arg)
             continue;
         }
         s_expected_sequence = s_command.sequence;
-        if (!s_int_active) {
+        if (!s_activated) {
             if (s_command.opcode != KSTREAM_V2_OP_ACTIVATE_INT ||
                 s_command.flags != KSTREAM_V2_INT_MODE_TOGGLE ||
                 s_command.arg0 != KSTREAM_V2_INT_EVENT_PHASE_ARMED ||
@@ -354,7 +397,7 @@ static void transport_task(void *arg)
                  * activation descriptor.  GPIO0 remains a stable boot HIGH. */
                 continue;
             }
-            s_int_active = true;
+            s_activated = true;
             send_response(KSTREAM_V2_RESULT_OK, "int active");
             continue;
         }
@@ -381,16 +424,23 @@ static void transport_task(void *arg)
             send_response(KSTREAM_V2_RESULT_BAD_OPCODE, "bad opcode");
             break;
         }
+        taskYIELD();
     }
 }
 
 bool kstream_slave_start(void)
 {
-    s_dma = dma_open_free();
-    if (!s_dma)
+    s_dma_rx = dma_open_free();
+    s_dma_tx = dma_open_free();
+    if (!s_dma_rx || !s_dma_tx)
         return false;
-    s_dma_done = xSemaphoreCreateBinary();
-    if (!s_dma_done)
+    s_dma_rx_done = xSemaphoreCreateBinary();
+    s_dma_tx_done = xSemaphoreCreateBinary();
+    s_downlink_ready = xSemaphoreCreateBinary();
+    if (!s_dma_rx_done || !s_dma_tx_done || !s_downlink_ready)
+        return false;
+    s_console_tx_mutex = xSemaphoreCreateMutexStatic(&s_console_tx_mutex_storage);
+    if (!s_console_tx_mutex)
         return false;
 
     sysctl_clock_enable(SYSCTL_CLOCK_GPIO);
@@ -400,6 +450,7 @@ bool kstream_slave_start(void)
     fpioa_set_function(PIN_SPI_CS, FUNC_SPI_SLAVE_SS);
     fpioa_set_function(PIN_SPI_CLK, FUNC_SPI_SLAVE_SCLK);
     fpioa_set_function(PIN_SPI_MOSI, FUNC_SPI_SLAVE_D0);
+    master_int_mode();
     sysctl_reset(SYSCTL_RESET_SPI2);
     sysctl_clock_enable(SYSCTL_CLOCK_SPI2);
     sysctl_clock_set_threshold(SYSCTL_THRESHOLD_SPI2, 0u);
@@ -417,6 +468,11 @@ uint8_t *kstream_downlink_read_acquire(size_t *length)
 void kstream_downlink_read_commit(size_t length)
 {
     ring_read_commit(&s_downlink, (uint32_t)length);
+}
+
+void kstream_downlink_wait(void)
+{
+    (void)xSemaphoreTake(s_downlink_ready, portMAX_DELAY);
 }
 
 uint8_t *kstream_uplink_write_acquire(size_t *length)
@@ -444,6 +500,7 @@ size_t kstream_console_write(const void *data, size_t length)
 {
     const uint8_t *source = (const uint8_t *)data;
     size_t total = 0u;
+    (void)xSemaphoreTake(s_console_tx_mutex, portMAX_DELAY);
     while (length != 0u) {
         uint32_t space = ring_write_contiguous(&s_console_tx);
         if (space == 0u)
@@ -455,6 +512,7 @@ size_t kstream_console_write(const void *data, size_t length)
         length -= count;
         total += count;
     }
+    (void)xSemaphoreGive(s_console_tx_mutex);
     return total;
 }
 
@@ -468,6 +526,9 @@ void kstream_slave_get_stats(kstream_slave_stats_t *stats)
     stats->console_tx_used = ring_used(&s_console_tx);
     stats->commands = s_commands;
     stats->faults = s_faults;
+    stats->bad_magic = s_bad_magic;
+    stats->bad_crc = s_bad_crc;
+    stats->calculated_crc = s_calculated_crc;
     stats->downlink_bytes = s_downlink_bytes;
     stats->uplink_bytes = s_uplink_bytes;
 }

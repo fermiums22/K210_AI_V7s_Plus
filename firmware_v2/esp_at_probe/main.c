@@ -43,6 +43,6 @@ int main(void)
  while((int32_t)(end-xTaskGetTickCount())>0){uint8_t c;if(io_read(uart,&c,1)>0){uarths_write_byte(c);n++;}else taskYIELD();}log_line("\r\nATPROBE:BOOT_DONE bytes=%lu",(unsigned long)n);
  const uint32_t bauds[]={177230,177000,176000,180000,172800,153600,128000,115200,74880,75000,9600,19200,38400,57600,76800,230400,460800,921600};uint32_t found=0;for(unsigned i=0;i<sizeof(bauds)/sizeof(bauds[0]);i++){uart_config(uart,bauds[i],8,UART_STOP_1,UART_PARITY_NONE);log_line("ATPROBE:BAUD %lu",(unsigned long)bauds[i]);if(command(uart,"AT","OK",2000)){found=bauds[i];break;}}
  if(!found){log_line("ATPROBE:HALT no-at-baud");for(;;)vTaskDelay(ticks(1000));}
- bool ok=command(uart,"AT+GMR","OK",3000)&&command(uart,"AT+CWMODE=1","OK",3000)&&command(uart,"AT+CWLAP","Fermiums_2.4",15000)&&command(uart,"AT+CWJAP=\"Fermiums_2.4\",\"876543212\"","OK",25000)&&command(uart,"AT+CIFSR","STAIP",5000);
- if(ok)log_line("ATPROBE:ALL_PASS baud=%lu ssid=Fermiums_2.4",(unsigned long)found);else log_line("ATPROBE:HALT wifi-test-failed");for(;;)vTaskDelay(ticks(1000));
+ bool ok=command(uart,"AT+GMR","OK",3000)&&command(uart,"AT+CWMODE=1","OK",3000)&&command(uart,"AT+CWLAP","ELECTRONICS",15000)&&command(uart,"AT+CWJAP=\"ELECTRONICS\",\"bdc123print\"","OK",25000)&&command(uart,"AT+CIFSR","STAIP",5000);
+ if(ok)log_line("ATPROBE:ALL_PASS baud=%lu ssid=ELECTRONICS",(unsigned long)found);else log_line("ATPROBE:HALT wifi-test-failed");for(;;)vTaskDelay(ticks(1000));
 }

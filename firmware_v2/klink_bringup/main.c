@@ -34,7 +34,7 @@
 #define GPIO_ESP_BOOT     3
 
 #define LOG_BAUD          115200u
-#define ESP_BOOT_MARKER   "STA_READY ssid=Fermiums_2.4"
+#define ESP_BOOT_MARKER   "STA_READY ssid=ELECTRONICS"
 #define CELLS_PER_RATE    4096u
 #define STREAM_TEST_BYTES (1024u * 1024u)
 #define LINK_ACQUIRE_CELLS 64u

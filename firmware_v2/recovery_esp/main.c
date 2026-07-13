@@ -33,7 +33,7 @@
 #define ESP_FLASH_BAUD   921600u
 #define ESP_FLASH_BLOCK  16384u
 #ifndef ESP_BOOT_MARKER
-#define ESP_BOOT_MARKER  "HSPI_ARMED kesp-v2-physical-29-xtal40"
+#define ESP_BOOT_MARKER  "STA_READY ssid=ELECTRONICS"
 #endif
 #if defined(RECOVERY_AT_TEST) || defined(RECOVERY_FORCE_FLASH)
 #define RECOVERY_FORCE_FLASH_ONCE 1
@@ -562,8 +562,8 @@ static bool run_at_wifi_test(void)
     bool ok = at_command(uart, "AT+UART_CUR?", "OK", 3000u) &&
               at_command(uart, "AT+GMR", "OK", 3000u) &&
               at_command(uart, "AT+CWMODE=1", "OK", 3000u) &&
-              at_command(uart, "AT+CWLAP", "Fermiums_2.4", 15000u) &&
-              at_command(uart, "AT+CWJAP=\"Fermiums_2.4\",\"876543212\"", "OK", 25000u) &&
+              at_command(uart, "AT+CWLAP", "ELECTRONICS", 15000u) &&
+              at_command(uart, "AT+CWJAP=\"ELECTRONICS\",\"bdc123print\"", "OK", 25000u) &&
               at_command(uart, "AT+CIFSR", "STAIP", 5000u);
     io_close(uart);
     return ok;
@@ -650,7 +650,7 @@ int main(void)
         hold_esp_reset();
         halt_forever(6u);
     }
-    log_line("ATTEST:ALL_PASS station=Fermiums_2.4");
+    log_line("ATTEST:ALL_PASS station=ELECTRONICS");
     pass_forever("at-wifi-confirmed");
 #else
     esp_pins_init();

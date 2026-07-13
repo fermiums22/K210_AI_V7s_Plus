@@ -10,7 +10,7 @@ project(k210_esp_recovery_v2 C CXX ASM)
 
 option(RECOVERY_AT_TEST "Flash merged ESP8285 AT image and run STA diagnostics" OFF)
 option(RECOVERY_FORCE_FLASH "Skip application marker probe and always flash ESP" OFF)
-set(RECOVERY_BOOT_MARKER "HSPI_ARMED kesp-v2-physical-29-xtal40"
+set(RECOVERY_BOOT_MARKER "STA_READY ssid=ELECTRONICS"
     CACHE STRING "UART marker proving that the flashed ESP application booted")
 
 set(ESP_V2_BUILD_DIR "${ROOT}/../K210_ESP_SPI_WIFI/esp8266_rtos_v2/bridge/build"
@@ -19,7 +19,7 @@ set(ESP_BOOT_BIN "${ESP_V2_BUILD_DIR}/bootloader/bootloader.bin"
     CACHE FILEPATH "ESP bootloader image")
 set(ESP_PART_BIN "${ESP_V2_BUILD_DIR}/partitions_1mb_singleapp.bin"
     CACHE FILEPATH "ESP partition table image")
-set(ESP_APP_BIN "${ESP_V2_BUILD_DIR}/kesp-klink-bridge-v2.bin"
+set(ESP_APP_BIN "${ESP_V2_BUILD_DIR}/esp8285-sta-klink.bin"
     CACHE FILEPATH "ESP application image")
 set(ESP_PHY_INIT_BIN
     "${ROOT}/../esp8266_sdk/ESP8266_RTOS_SDK/components/esp8266/firmware/esp_init_data_default.bin"
@@ -27,13 +27,6 @@ set(ESP_PHY_INIT_BIN
 set(ESP_SYS_PARAM_BLANK_BIN
     "${ROOT}/../esp8266_sdk/ESP8266_RTOS_SDK/components/esp8266/firmware/blank.bin"
     CACHE FILEPATH "Blank ESP8266 SDK system parameter sector")
-
-foreach(image IN ITEMS ESP_BOOT_BIN ESP_PART_BIN ESP_APP_BIN ESP_PHY_INIT_BIN ESP_SYS_PARAM_BLANK_BIN)
-    if(NOT EXISTS "${${image}}")
-        message(FATAL_ERROR "Required ESP v2 image is missing: ${${image}}")
-    endif()
-    file(TO_CMAKE_PATH "${${image}}" "${image}_ASM")
-endforeach()
 
 if(RECOVERY_AT_TEST)
     set(ESP_AT_FULL_BIN "${ROOT}/sdcard/esp_flash/esp8285_at.bin" CACHE FILEPATH "Merged 1 MiB AT firmware")
@@ -44,6 +37,12 @@ if(RECOVERY_AT_TEST)
     configure_file("${CMAKE_CURRENT_LIST_DIR}/esp_at_image.S.in" "${CMAKE_BINARY_DIR}/esp_images.S" @ONLY)
     set_source_files_properties("${CMAKE_BINARY_DIR}/esp_images.S" PROPERTIES OBJECT_DEPENDS "${ESP_AT_FULL_BIN}")
 else()
+    foreach(image IN ITEMS ESP_BOOT_BIN ESP_PART_BIN ESP_APP_BIN ESP_PHY_INIT_BIN ESP_SYS_PARAM_BLANK_BIN)
+        if(NOT EXISTS "${${image}}")
+            message(FATAL_ERROR "Required ESP v2 image is missing: ${${image}}")
+        endif()
+        file(TO_CMAKE_PATH "${${image}}" "${image}_ASM")
+    endforeach()
     configure_file("${CMAKE_CURRENT_LIST_DIR}/esp_images.S.in" "${CMAKE_BINARY_DIR}/esp_images.S" @ONLY)
     set_source_files_properties("${CMAKE_BINARY_DIR}/esp_images.S" PROPERTIES
         OBJECT_DEPENDS "${ESP_BOOT_BIN};${ESP_PART_BIN};${ESP_APP_BIN};${ESP_PHY_INIT_BIN};${ESP_SYS_PARAM_BLANK_BIN}")

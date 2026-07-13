@@ -68,6 +68,37 @@ int main(void)
         exchange(&a, &b, &event_a, &event_b, &a_cell, &b_cell);
     ok &= check(a.peer_credit[KLINK_CH_BULK] == 2u, "released-credit-advertised");
 
+    const uint8_t camera_old[3] = { 1u, 2u, 3u };
+    const uint8_t camera_new[3] = { 4u, 5u, 6u };
+    ok &= check(klink_v1_queue(&a, KLINK_CH_CAMERA, KLINK_T_DATA, 0u,
+                               camera_old, sizeof(camera_old)),
+                "queue-realtime-old");
+    ok &= check(klink_v1_queue(&a, KLINK_CH_CAMERA, KLINK_T_DATA, 0u,
+                               camera_new, sizeof(camera_new)),
+                "replace-realtime-latest");
+    klink_v1_build_tx(&a, &a_cell);
+    ok &= check(a_cell.sequence == 0u, "realtime-first-sequence");
+    ok &= check(memcmp(a_cell.payload, camera_new, sizeof(camera_new)) == 0,
+                "realtime-latest-payload");
+    ok &= check(klink_v1_process_rx(&b, &a_cell, &event_b) & KLINK_EVENT_RX,
+                "realtime-delivered");
+    ok &= check(b.fault == KLINK_FAULT_NONE, "realtime-no-credit-fault");
+
+    ok &= check(klink_v1_queue(&a, KLINK_CH_CAMERA, KLINK_T_DATA, 0u,
+                               camera_old, sizeof(camera_old)),
+                "queue-realtime-gap-drop");
+    klink_v1_build_tx(&a, &a_cell);
+    ok &= check(a_cell.sequence == 1u, "realtime-second-sequence");
+    ok &= check(klink_v1_queue(&a, KLINK_CH_CAMERA, KLINK_T_DATA, 0u,
+                               camera_new, sizeof(camera_new)),
+                "queue-realtime-after-drop");
+    klink_v1_build_tx(&a, &a_cell);
+    ok &= check(a_cell.sequence == 2u, "realtime-third-sequence");
+    ok &= check(klink_v1_process_rx(&b, &a_cell, &event_b) & KLINK_EVENT_RX,
+                "realtime-gap-delivered");
+    ok &= check(b.stats.rx_realtime_gaps == 1u, "realtime-gap-counted");
+    ok &= check(b.fault == KLINK_FAULT_NONE, "realtime-gap-no-fault");
+
     klink_v1_endpoint_t bad = b;
     klink_v1_build_tx(&a, &a_cell);
     a_cell.payload[0] ^= 0x80u;
