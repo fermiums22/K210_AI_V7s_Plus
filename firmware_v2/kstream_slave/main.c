@@ -164,7 +164,7 @@ static void uplink_benchmark_task(void *arg)
         size_t length;
         uint8_t *destination = kstream_uplink_write_acquire(&length);
         if (length == 0u) {
-            taskYIELD();
+            kstream_uplink_wait();
             continue;
         }
         if (length > 1920u)
@@ -173,7 +173,7 @@ static void uplink_benchmark_task(void *arg)
             destination[i] = pattern_byte(offset + i);
         kstream_uplink_write_commit(length);
         offset += length;
-        vTaskDelay(ticks(8u));
+        vTaskDelay(ticks(10u));
     }
 }
 

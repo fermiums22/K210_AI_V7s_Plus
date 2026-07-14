@@ -30,6 +30,7 @@ void kstream_downlink_wait(void);
 
 uint8_t *kstream_uplink_write_acquire(size_t *length);
 void kstream_uplink_write_commit(size_t length);
+void kstream_uplink_wait(void);
 
 size_t kstream_console_read(void *data, size_t length);
 size_t kstream_console_write(const void *data, size_t length);

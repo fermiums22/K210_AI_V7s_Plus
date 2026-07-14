@@ -68,6 +68,7 @@ static handle_t s_dma_tx;
 static SemaphoreHandle_t s_dma_rx_done;
 static SemaphoreHandle_t s_dma_tx_done;
 static SemaphoreHandle_t s_downlink_ready;
+static SemaphoreHandle_t s_uplink_space;
 static StaticSemaphore_t s_console_tx_mutex_storage;
 static SemaphoreHandle_t s_console_tx_mutex;
 static uint32_t s_ready_level = 1u;
@@ -359,8 +360,10 @@ static void handle_pull(void)
     dma_phase(SYSCTL_DMA_SELECT_SSI2_TX_REQ, source,
               &SSI->dr[0], true, false, wire / 4u, true);
     ring_read_commit(ring, s_command.length);
-    if (ring == &s_uplink)
+    if (ring == &s_uplink) {
         s_uplink_bytes += s_command.length;
+        (void)xSemaphoreGive(s_uplink_space);
+    }
     send_response(KSTREAM_V2_RESULT_OK, "pull complete");
 }
 
@@ -450,7 +453,9 @@ bool kstream_slave_start(void)
     s_dma_rx_done = xSemaphoreCreateBinary();
     s_dma_tx_done = xSemaphoreCreateBinary();
     s_downlink_ready = xSemaphoreCreateBinary();
-    if (!s_dma_rx_done || !s_dma_tx_done || !s_downlink_ready)
+    s_uplink_space = xSemaphoreCreateBinary();
+    if (!s_dma_rx_done || !s_dma_tx_done || !s_downlink_ready ||
+        !s_uplink_space)
         return false;
     s_console_tx_mutex = xSemaphoreCreateMutexStatic(&s_console_tx_mutex_storage);
     if (!s_console_tx_mutex)
@@ -497,6 +502,11 @@ uint8_t *kstream_uplink_write_acquire(size_t *length)
 void kstream_uplink_write_commit(size_t length)
 {
     ring_write_commit(&s_uplink, (uint32_t)length);
+}
+
+void kstream_uplink_wait(void)
+{
+    (void)xSemaphoreTake(s_uplink_space, portMAX_DELAY);
 }
 
 size_t kstream_console_read(void *data, size_t length)

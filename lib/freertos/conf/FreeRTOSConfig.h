@@ -59,7 +59,7 @@
 /* clock */
 #define configCPU_CLOCK_HZ					uxPortGetCPUClock()
 #define configTICK_CLOCK_HZ					( configCPU_CLOCK_HZ / 50 )
-#define configTICK_RATE_HZ					( ( TickType_t ) 100 )
+#define configTICK_RATE_HZ					( ( TickType_t ) 1000 )
 
 /* multithreading */
 #define configUSE_NEWLIB_REENTRANT				1
