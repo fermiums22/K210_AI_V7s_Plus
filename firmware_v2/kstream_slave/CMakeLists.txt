@@ -26,14 +26,25 @@ add_subdirectory("${ROOT}/lib/drivers" "${CMAKE_BINARY_DIR}/drivers")
 add_executable(k210_kstream_slave_v2
     "${CMAKE_CURRENT_LIST_DIR}/main.c"
     "${CMAKE_CURRENT_LIST_DIR}/kstream_slave.c"
+    "${CMAKE_CURRENT_LIST_DIR}/kupdate_task.c"
     "${ROOT}/firmware_v2/klink_bringup/newlib_locks.c"
     "${ROOT}/protocol/kstream_v2.c"
     "${ROOT}/protocol/knet_v2.c"
+    "${ROOT}/protocol/kupdate_v2.c"
+    "${ROOT}/firmware_v2/common/sha256_stream.c"
+    "${ROOT}/firmware_v2/common/k210_flash.c"
+    "${ROOT}/firmware_v2/common/kboot_meta_v2.c"
 )
+
+if (K210_APP_SLOT0)
+    target_sources(k210_kstream_slave_v2 PRIVATE "${ROOT}/src/boot_app_header.S")
+    target_compile_definitions(k210_kstream_slave_v2 PRIVATE K210_APP_SLOT0=1)
+endif()
 
 target_include_directories(k210_kstream_slave_v2 PRIVATE
     "${CMAKE_CURRENT_LIST_DIR}"
     "${ROOT}/protocol"
+    "${ROOT}/firmware_v2/common"
     "${ROOT}/lib/arch/include"
     "${ROOT}/lib/bsp/include"
     "${ROOT}/lib/hal/include"

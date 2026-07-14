@@ -23,7 +23,7 @@
 #define PIN_SPI_CLK      1
 #define PIN_SPI_MISO     2
 #define PIN_SPI_MOSI     3
-#define PIN_MASTER_PHASE 7
+#define PIN_MASTER_PHASE 6
 #define PIN_READY        15
 #define GPIO_READY       3
 #define GPIO_MASTER_INT  4
@@ -32,9 +32,12 @@
 #define UPLINK_BYTES     (64u * 1024u)
 #define CONSOLE_RX_BYTES (8u * 1024u)
 #define CONSOLE_TX_BYTES (8u * 1024u)
+#define UPDATE_RX_BYTES  (64u * 1024u)
+#define UPDATE_TX_BYTES  (1024u)
 #define TX_FIFO_BYTES     KSTREAM_V2_BURST_BYTES
 #define CONSOLE_TX_PIO_BYTES 128u
 #define SSI_TX_FIFO_WORDS 8u
+#define SPI_RX_TRAILER_BYTES 8u
 
 #define SSI_CTRLR0_TMOD_TX (1u << 8)
 #define SSI_CTRLR0_SLV_OE  (1u << 10)
@@ -55,15 +58,19 @@ static uint8_t s_downlink_data[DOWNLINK_BYTES] __attribute__((aligned(64)));
 static uint8_t s_uplink_data[UPLINK_BYTES] __attribute__((aligned(64)));
 static uint8_t s_console_rx_data[CONSOLE_RX_BYTES] __attribute__((aligned(64)));
 static uint8_t s_console_tx_data[CONSOLE_TX_BYTES] __attribute__((aligned(64)));
+static uint8_t s_update_rx_data[UPDATE_RX_BYTES] __attribute__((aligned(64)));
+static uint8_t s_update_tx_data[UPDATE_TX_BYTES] __attribute__((aligned(64)));
 static byte_ring_t s_downlink = {s_downlink_data, DOWNLINK_BYTES, 0, 0};
 static byte_ring_t s_uplink = {s_uplink_data, UPLINK_BYTES, 0, 0};
 static byte_ring_t s_console_rx = {s_console_rx_data, CONSOLE_RX_BYTES, 0, 0};
 static byte_ring_t s_console_tx = {s_console_tx_data, CONSOLE_TX_BYTES, 0, 0};
+static byte_ring_t s_update_rx = {s_update_rx_data, UPDATE_RX_BYTES, 0, 0};
+static byte_ring_t s_update_tx = {s_update_tx_data, UPDATE_TX_BYTES, 0, 0};
 static kstream_v2_command_t s_command __attribute__((aligned(64)));
 static kstream_v2_response_t s_response __attribute__((aligned(64)));
-static uint8_t s_command_wire[KSTREAM_V2_FRAME_BYTES]
+static uint8_t s_command_wire[KSTREAM_V2_FRAME_BYTES + SPI_RX_TRAILER_BYTES]
     __attribute__((aligned(64)));
-static uint8_t s_rx_bounce[KSTREAM_V2_BURST_BYTES + 4u]
+static uint8_t s_rx_bounce[KSTREAM_V2_BURST_BYTES + SPI_RX_TRAILER_BYTES]
     __attribute__((aligned(64)));
 static handle_t s_dma_rx;
 static handle_t s_dma_tx;
@@ -71,6 +78,7 @@ static SemaphoreHandle_t s_dma_rx_done;
 static SemaphoreHandle_t s_dma_tx_done;
 static SemaphoreHandle_t s_downlink_ready;
 static SemaphoreHandle_t s_uplink_space;
+static SemaphoreHandle_t s_update_ready;
 static StaticSemaphore_t s_console_tx_mutex_storage;
 static SemaphoreHandle_t s_console_tx_mutex;
 static uint32_t s_ready_level = 1u;
@@ -295,6 +303,8 @@ static void fill_status(kstream_v2_response_t *response, uint32_t sequence,
             ? console_tx_used
             : CONSOLE_TX_PIO_BYTES;
     response->console_rx_free = ring_write_contiguous(&s_console_rx) & ~3u;
+    response->update_rx_free = ring_write_contiguous(&s_update_rx) & ~3u;
+    response->update_tx_used = ring_read_contiguous(&s_update_tx) & ~3u;
     response->faults = s_faults;
     if (message)
         strncpy((char *)response->message, message, sizeof(response->message));
@@ -317,6 +327,8 @@ static byte_ring_t *push_ring(uint8_t stream)
         return &s_downlink;
     if (stream == KSTREAM_V2_STREAM_CONSOLE_RX)
         return &s_console_rx;
+    if (stream == KSTREAM_V2_STREAM_UPDATE_RX)
+        return &s_update_rx;
     return NULL;
 }
 
@@ -326,6 +338,8 @@ static byte_ring_t *pull_ring(uint8_t stream)
         return &s_uplink;
     if (stream == KSTREAM_V2_STREAM_CONSOLE_TX)
         return &s_console_tx;
+    if (stream == KSTREAM_V2_STREAM_UPDATE_TX)
+        return &s_update_tx;
     return NULL;
 }
 
@@ -349,12 +363,15 @@ static void handle_push(void)
     uint8_t *ring_destination = ring_write_pointer(ring);
     spi_rx_dma_mode();
     dma_phase(SYSCTL_DMA_SELECT_SSI2_RX_REQ, &SSI->dr[0],
-              s_rx_bounce, false, true, wire / 4u, false);
+              s_rx_bounce, false, true,
+              (wire + SPI_RX_TRAILER_BYTES) / 4u, false);
     memcpy(ring_destination, s_rx_bounce, s_command.length);
     ring_write_commit(ring, s_command.length);
     if (ring == &s_downlink) {
         s_downlink_bytes += s_command.length;
         (void)xSemaphoreGive(s_downlink_ready);
+    } else if (ring == &s_update_rx) {
+        (void)xSemaphoreGive(s_update_ready);
     }
     send_response(KSTREAM_V2_RESULT_OK, "push complete");
 }
@@ -365,7 +382,8 @@ static void handle_pull(void)
     byte_ring_t *ring = pull_ring(s_command.stream);
     uint32_t wire = s_command.arg0;
     uint32_t expected_wire = s_command.length;
-    if (s_command.stream == KSTREAM_V2_STREAM_CONSOLE_TX) {
+    if (s_command.stream == KSTREAM_V2_STREAM_CONSOLE_TX ||
+        s_command.stream == KSTREAM_V2_STREAM_UPDATE_TX) {
         expected_wire = (s_command.length + 3u) & ~3u;
         if (expected_wire < KSTREAM_V2_FRAME_BYTES)
             expected_wire = KSTREAM_V2_FRAME_BYTES;
@@ -373,6 +391,15 @@ static void handle_pull(void)
     if (!ring || s_command.length == 0u || wire != expected_wire ||
         (wire & 3u) != 0u || wire > KSTREAM_V2_BURST_BYTES ||
         s_command.length > ring_read_contiguous(ring)) {
+        if (s_command.stream == KSTREAM_V2_STREAM_UPDATE_TX) {
+            char line[96];
+            snprintf(line, sizeof(line),
+                     "KUPDATE:PULL_REJECT len=%lu wire=%lu expected=%lu used=%lu\r\n",
+                     (unsigned long)s_command.length, (unsigned long)wire,
+                     (unsigned long)expected_wire,
+                     (unsigned long)(ring ? ring_read_contiguous(ring) : 0u));
+            uarths_puts(line);
+        }
         ++s_faults;
         send_response(ring ? KSTREAM_V2_RESULT_NO_CREDIT
                            : KSTREAM_V2_RESULT_BAD_STREAM,
@@ -381,12 +408,13 @@ static void handle_pull(void)
     }
 
     const void *source = ring_read_pointer(ring);
-    if (ring == &s_console_tx && wire != s_command.length) {
+    if ((ring == &s_console_tx || ring == &s_update_tx) &&
+        wire != s_command.length) {
         memcpy(s_rx_bounce, source, s_command.length);
         memset(s_rx_bounce + s_command.length, 0, wire - s_command.length);
         source = s_rx_bounce;
     }
-    if (ring == &s_console_tx) {
+    if (ring == &s_console_tx || ring == &s_update_tx) {
         spi_tx_mode(false);
         pio_tx_phase(source, wire / 4u);
     } else {
@@ -395,6 +423,8 @@ static void handle_pull(void)
                   &SSI->dr[0], true, false, wire / 4u, true);
     }
     ring_read_commit(ring, s_command.length);
+    if (ring == &s_update_tx)
+        return;
     if (ring == &s_uplink) {
         s_uplink_bytes += s_command.length;
         (void)xSemaphoreGive(s_uplink_space);
@@ -491,8 +521,9 @@ bool kstream_slave_start(void)
     s_dma_tx_done = xSemaphoreCreateBinary();
     s_downlink_ready = xSemaphoreCreateBinary();
     s_uplink_space = xSemaphoreCreateBinary();
+    s_update_ready = xSemaphoreCreateBinary();
     if (!s_dma_rx_done || !s_dma_tx_done || !s_downlink_ready ||
-        !s_uplink_space)
+        !s_uplink_space || !s_update_ready)
         return false;
     s_console_tx_mutex = xSemaphoreCreateMutexStatic(&s_console_tx_mutex_storage);
     if (!s_console_tx_mutex)
@@ -574,6 +605,37 @@ size_t kstream_console_write(const void *data, size_t length)
     }
     (void)xSemaphoreGive(s_console_tx_mutex);
     return total;
+}
+
+size_t kstream_update_read(void *data, size_t length)
+{
+    while (ring_used(&s_update_rx) == 0u)
+        (void)xSemaphoreTake(s_update_ready, portMAX_DELAY);
+    uint32_t available = ring_read_contiguous(&s_update_rx);
+    if (length > available)
+        length = available;
+    memcpy(data, ring_read_pointer(&s_update_rx), length);
+    ring_read_commit(&s_update_rx, (uint32_t)length);
+    return length;
+}
+
+size_t kstream_update_write(const void *data, size_t length)
+{
+    const uint8_t *source = (const uint8_t *)data;
+    if (ring_free(&s_update_tx) < length)
+        return 0u;
+    size_t requested = length;
+    size_t total = 0u;
+    while (length != 0u) {
+        uint32_t space = ring_write_contiguous(&s_update_tx);
+        size_t count = length < space ? length : space;
+        memcpy(ring_write_pointer(&s_update_tx), source, count);
+        ring_write_commit(&s_update_tx, (uint32_t)count);
+        source += count;
+        length -= count;
+        total += count;
+    }
+    return total == requested ? total : 0u;
 }
 
 void kstream_slave_get_stats(kstream_slave_stats_t *stats)

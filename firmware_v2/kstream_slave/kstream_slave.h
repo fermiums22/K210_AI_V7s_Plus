@@ -38,4 +38,7 @@ void kstream_uplink_wait(void);
 size_t kstream_console_read(void *data, size_t length);
 size_t kstream_console_write(const void *data, size_t length);
 
+size_t kstream_update_read(void *data, size_t length);
+size_t kstream_update_write(const void *data, size_t length);
+
 #endif

@@ -14,6 +14,7 @@
 #include <uarths.h>
 
 #include "kstream_slave.h"
+#include "kupdate_task.h"
 
 #define PIN_DBG_RX   4
 #define PIN_DBG_TX   5
@@ -278,6 +279,11 @@ int main(void)
     }
     if (!kstream_slave_start()) {
         uarths_puts("KSTREAM:FATAL slave init failed\r\n");
+        for (;;)
+            vTaskDelay(ticks(1000u));
+    }
+    if (!kupdate_task_start()) {
+        uarths_puts("KSTREAM:FATAL update task failed\r\n");
         for (;;)
             vTaskDelay(ticks(1000u));
     }

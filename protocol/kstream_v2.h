@@ -15,6 +15,7 @@
 #define KSTREAM_V2_PORT_DOWNLINK   21010u
 #define KSTREAM_V2_PORT_UPLINK     21011u
 #define KSTREAM_V2_PORT_CONSOLE    21012u
+#define KSTREAM_V2_PORT_UPDATE     21002u
 
 typedef enum kstream_v2_stream {
     KSTREAM_V2_STREAM_NONE = 0,
@@ -22,6 +23,8 @@ typedef enum kstream_v2_stream {
     KSTREAM_V2_STREAM_UPLINK = 2,
     KSTREAM_V2_STREAM_CONSOLE_RX = 3,
     KSTREAM_V2_STREAM_CONSOLE_TX = 4,
+    KSTREAM_V2_STREAM_UPDATE_RX = 5,
+    KSTREAM_V2_STREAM_UPDATE_TX = 6,
 } kstream_v2_stream_t;
 
 typedef enum kstream_v2_opcode {
@@ -82,9 +85,10 @@ typedef struct __attribute__((packed, aligned(4))) kstream_v2_response {
     uint32_t uplink_used;
     uint32_t console_tx_used;
     uint32_t console_rx_free;
-    uint32_t actual_length;
+    uint32_t update_rx_free;
     uint32_t faults;
-    uint8_t message[24];
+    uint32_t update_tx_used;
+    uint8_t message[20];
     uint32_t crc32;
 } kstream_v2_response_t;
 
