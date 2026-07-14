@@ -264,8 +264,7 @@ static void fill_status(kstream_v2_response_t *response, uint32_t sequence,
     response->uplink_used =
         (uplink_used < TX_FIFO_BYTES ? uplink_used : TX_FIFO_BYTES) & ~3u;
     response->console_tx_used =
-        (console_tx_used < TX_FIFO_BYTES ? console_tx_used : TX_FIFO_BYTES) &
-        ~3u;
+        console_tx_used < TX_FIFO_BYTES ? console_tx_used : TX_FIFO_BYTES;
     response->console_rx_free = ring_write_contiguous(&s_console_rx) & ~3u;
     response->faults = s_faults;
     if (message)
@@ -334,9 +333,15 @@ static void handle_pull(void)
 {
     byte_ring_t *ring = pull_ring(s_command.stream);
     uint32_t wire = s_command.arg0;
-    if (!ring || s_command.length == 0u || wire != s_command.length ||
+    uint32_t expected_wire = s_command.length;
+    if (s_command.stream == KSTREAM_V2_STREAM_CONSOLE_TX) {
+        expected_wire = (s_command.length + 3u) & ~3u;
+        if (expected_wire < KSTREAM_V2_FRAME_BYTES)
+            expected_wire = KSTREAM_V2_FRAME_BYTES;
+    }
+    if (!ring || s_command.length == 0u || wire != expected_wire ||
         (wire & 3u) != 0u || wire > KSTREAM_V2_BURST_BYTES ||
-        wire > ring_read_contiguous(ring)) {
+        s_command.length > ring_read_contiguous(ring)) {
         ++s_faults;
         send_response(ring ? KSTREAM_V2_RESULT_NO_CREDIT
                            : KSTREAM_V2_RESULT_BAD_STREAM,
@@ -344,12 +349,18 @@ static void handle_pull(void)
         return;
     }
 
+    const void *source = ring_read_pointer(ring);
+    if (ring == &s_console_tx && wire != s_command.length) {
+        memcpy(s_rx_bounce, source, s_command.length);
+        memset(s_rx_bounce + s_command.length, 0, wire - s_command.length);
+        source = s_rx_bounce;
+    }
     spi_tx_mode(true);
-    dma_phase(SYSCTL_DMA_SELECT_SSI2_TX_REQ, ring_read_pointer(ring),
+    dma_phase(SYSCTL_DMA_SELECT_SSI2_TX_REQ, source,
               &SSI->dr[0], true, false, wire / 4u, true);
-    ring_read_commit(ring, wire);
+    ring_read_commit(ring, s_command.length);
     if (ring == &s_uplink)
-        s_uplink_bytes += wire;
+        s_uplink_bytes += s_command.length;
     send_response(KSTREAM_V2_RESULT_OK, "pull complete");
 }
 
