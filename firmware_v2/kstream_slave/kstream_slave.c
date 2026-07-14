@@ -86,7 +86,9 @@ static void wait_master_int(bool high)
 {
     const uint32_t mask = 1u << GPIO_MASTER_INT;
     while (((GPIOHS_REG->input_val.u32[0] & mask) != 0u) != high)
-        taskYIELD();
+        if (s_command.opcode == KSTREAM_V2_OP_PUSH &&
+            s_command.stream == KSTREAM_V2_STREAM_CONSOLE_RX)
+            vTaskDelay(1u);
 }
 
 static void master_int_mode(void)
@@ -98,11 +100,11 @@ static void master_int_mode(void)
     GPIOHS_REG->input_en.u32[0] |= 1u << GPIO_MASTER_INT;
 }
 
-static void ready_signal(void)
+static void ready_set(bool high)
 {
     if (!s_int_active)
         return;
-    s_ready_level ^= 1u;
+    s_ready_level = high ? 1u : 0u;
     if (s_ready_level)
         GPIO_REG->data_output.u32[0] |= 1u << GPIO_READY;
     else
@@ -142,29 +144,16 @@ static void dma_phase(uint32_t request, const volatile void *source,
         wait_master_int(true);
     if (transmit && s_commands == 1u)
         uarths_puts("KSTREAM:TX MASTER_IDLE\r\n");
-    ready_signal();
+    ready_set(true);
     if (transmit && s_commands == 1u)
         uarths_puts("KSTREAM:TX RESPONSE_ARMED\r\n");
-    if (transmit) {
-        wait_master_int(false);
-        ready_signal();
-        wait_master_int(true);
-        ready_signal();
-    }
-    if (transmit && words != 0u)
+    if (words != 0u)
         (void)xSemaphoreTake(dma_done, portMAX_DELAY);
-    else if (!transmit) {
-        (void)xSemaphoreTake(dma_done, portMAX_DELAY);
-        wait_master_int(false);
+    wait_master_int(false);
+    if (!transmit)
         s_int_active = true;
-        ready_signal();
-        wait_master_int(true);
-    }
-    if (transmit) {
-        wait_master_int(false);
-        ready_signal();
-        wait_master_int(true);
-    }
+    ready_set(false);
+    wait_master_int(true);
 }
 
 static uint32_t ring_used(const byte_ring_t *ring)
@@ -213,13 +202,21 @@ static void ring_read_commit(byte_ring_t *ring, uint32_t length)
     ring->read_count += length;
 }
 
+static void spi_rx_fifo_drain(void)
+{
+    uint32_t pending = SSI->rxflr;
+    if (pending > 32u)
+        pending = 32u;
+    while (pending-- != 0u)
+        (void)SSI->dr[0];
+}
+
 static void spi_command_mode(void)
 {
     SSI->ssienr = 0u;
     fpioa_set_function(PIN_SPI_MISO, FUNC_RESV0);
     fpioa_set_function(PIN_SPI_MOSI, FUNC_SPI_SLAVE_D0);
-    while (SSI->rxflr != 0u)
-        (void)SSI->dr[0];
+    spi_rx_fifo_drain();
     SSI->ctrlr0 = SSI_CTRLR0_SLV_OE | SSI_CTRLR0_DFS_32;
     SSI->dmardlr = 3u;
     SSI->dmacr = 1u;
@@ -233,6 +230,7 @@ static void spi_rx_dma_mode(void)
     SSI->ssienr = 0u;
     fpioa_set_function(PIN_SPI_MISO, FUNC_RESV0);
     fpioa_set_function(PIN_SPI_MOSI, FUNC_SPI_SLAVE_D0);
+    spi_rx_fifo_drain();
     SSI->ctrlr0 = SSI_CTRLR0_SLV_OE | SSI_CTRLR0_DFS_32;
     SSI->dmardlr = 3u;
     SSI->dmacr = 1u;
@@ -396,8 +394,8 @@ static void transport_task(void *arg)
             continue;
         }
         if (s_command.opcode == KSTREAM_V2_OP_ACTIVATE_INT &&
-            s_command.flags == KSTREAM_V2_INT_MODE_TOGGLE &&
-            s_command.arg0 == KSTREAM_V2_INT_EVENT_PHASE_ARMED &&
+            s_command.flags == KSTREAM_V2_INT_MODE_LEVEL &&
+            s_command.arg0 == KSTREAM_V2_INT_EVENT_DMA_READY &&
             s_command.arg1 == KSTREAM_V2_INT_BOOT_LEVEL_HIGH) {
             taskENTER_CRITICAL();
             s_downlink.read_count = s_downlink.write_count;
@@ -473,7 +471,7 @@ bool kstream_slave_start(void)
     sysctl_clock_enable(SYSCTL_CLOCK_SPI2);
     sysctl_clock_set_threshold(SYSCTL_THRESHOLD_SPI2, 0u);
     spi_command_mode();
-    return xTaskCreate(transport_task, "kstream_slave", 3072, NULL, 9,
+    return xTaskCreate(transport_task, "kstream_slave", 3072, NULL, 4,
                        NULL) == pdPASS;
 }
 

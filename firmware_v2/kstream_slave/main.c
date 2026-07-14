@@ -29,6 +29,8 @@ static handle_t s_esp_uart;
 static volatile bool s_benchmark_uplink;
 static volatile bool s_benchmark_downlink;
 static uint64_t s_downlink_expected;
+static uint64_t s_downlink_received;
+static uint64_t s_downlink_skipped;
 static uint64_t s_downlink_errors;
 
 static uint8_t pattern_byte(uint64_t offset);
@@ -136,10 +138,30 @@ static void downlink_sink_task(void *arg)
         }
         if (s_benchmark_downlink) {
             for (size_t i = 0u; i < length; ++i) {
-                if (source[i] != pattern_byte(s_downlink_expected + i))
+                if (source[i] != pattern_byte(s_downlink_expected)) {
+                    uint64_t skipped;
+                    for (skipped = 1u; skipped <= 4800u; ++skipped) {
+                        size_t matched = 0u;
+                        size_t check = length - i;
+                        if (check > 16u)
+                            check = 16u;
+                        while (matched < check &&
+                               source[i + matched] == pattern_byte(
+                                   s_downlink_expected + skipped + matched))
+                            ++matched;
+                        if (matched == check)
+                            break;
+                    }
+                    if (skipped <= 4800u) {
+                        s_downlink_expected += skipped;
+                        s_downlink_skipped += skipped;
+                    }
+                }
+                if (source[i] != pattern_byte(s_downlink_expected))
                     ++s_downlink_errors;
+                ++s_downlink_expected;
             }
-            s_downlink_expected += length;
+            s_downlink_received += length;
         }
         /* Robot application replaces this sink with its KNET frame parser.
          * Consuming in-place proves that SPI DMA never needs another copy. */
@@ -156,15 +178,18 @@ static void uplink_benchmark_task(void *arg)
 {
     (void)arg;
     uint64_t offset = 0u;
+    TickType_t next_release = xTaskGetTickCount();
     for (;;) {
         if (!s_benchmark_uplink) {
             vTaskDelay(ticks(20u));
+            next_release = xTaskGetTickCount();
             continue;
         }
         size_t length;
         uint8_t *destination = kstream_uplink_write_acquire(&length);
         if (length == 0u) {
             kstream_uplink_wait();
+            next_release = xTaskGetTickCount();
             continue;
         }
         if (length > 1920u)
@@ -173,7 +198,7 @@ static void uplink_benchmark_task(void *arg)
             destination[i] = pattern_byte(offset + i);
         kstream_uplink_write_commit(length);
         offset += length;
-        vTaskDelay(ticks(10u));
+        vTaskDelayUntil(&next_release, ticks(10u));
     }
 }
 
@@ -184,7 +209,7 @@ static void console_command(const char *line)
     } else if (strcmp(line, "status") == 0) {
         kstream_slave_stats_t stats;
         kstream_slave_get_stats(&stats);
-        log_line("status down=%lu/%lu up=%lu/%lu cmd=%lu faults=%lu rx=%llu tx=%llu derr=%llu",
+        log_line("status down=%lu/%lu up=%lu/%lu cmd=%lu faults=%lu rx=%llu tx=%llu dloss=%llu derr=%llu",
                  (unsigned long)stats.downlink_used,
                  (unsigned long)stats.downlink_free,
                  (unsigned long)stats.uplink_used,
@@ -192,6 +217,7 @@ static void console_command(const char *line)
                  (unsigned long)stats.commands, (unsigned long)stats.faults,
                  (unsigned long long)stats.downlink_bytes,
                  (unsigned long long)stats.uplink_bytes,
+                 (unsigned long long)s_downlink_skipped,
                  (unsigned long long)s_downlink_errors);
     } else if (strcmp(line, "bench on") == 0) {
         s_benchmark_uplink = true;
@@ -201,14 +227,17 @@ static void console_command(const char *line)
         log_line("uplink benchmark disabled");
     } else if (strcmp(line, "bench down reset") == 0) {
         s_downlink_expected = 0u;
+        s_downlink_received = 0u;
+        s_downlink_skipped = 0u;
         s_downlink_errors = 0u;
         __sync_synchronize();
         s_benchmark_downlink = true;
         log_line("downlink benchmark enabled");
     } else if (strcmp(line, "bench down off") == 0) {
         s_benchmark_downlink = false;
-        log_line("downlink benchmark disabled bytes=%llu errors=%llu",
-                 (unsigned long long)s_downlink_expected,
+        log_line("downlink benchmark disabled bytes=%llu skipped=%llu errors=%llu",
+                 (unsigned long long)s_downlink_received,
+                 (unsigned long long)s_downlink_skipped,
                  (unsigned long long)s_downlink_errors);
     } else if (line[0] != 0) {
         log_line("unknown command: %s", line);
@@ -260,9 +289,9 @@ int main(void)
      * decision: IO15 remains HIGH until ACTIVATE_INT is received. */
     vTaskDelay(ticks(100u));
     esp_enable();
-    xTaskCreate(downlink_sink_task, "down_sink", 1536u, NULL, 10u, NULL);
-    xTaskCreate(uplink_benchmark_task, "up_source", 1536u, NULL, 9u, NULL);
-    xTaskCreate(console_task, "console", 1536u, NULL, 9u, NULL);
+    xTaskCreate(downlink_sink_task, "down_sink", 1536u, NULL, 3u, NULL);
+    xTaskCreate(uplink_benchmark_task, "up_source", 1536u, NULL, 2u, NULL);
+    xTaskCreate(console_task, "console", 1536u, NULL, 4u, NULL);
     log_line("KSTREAM:SLAVE_READY cs=io0 clk=io1 miso=io2 mosi=io3");
     for (;;) {
         kstream_slave_stats_t stats;

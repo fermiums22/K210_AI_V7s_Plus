@@ -37,6 +37,8 @@ typedef enum kstream_v2_opcode {
  * The ESP master selects this single supported wire contract explicitly. */
 #define KSTREAM_V2_INT_MODE_TOGGLE       0x01u
 #define KSTREAM_V2_INT_EVENT_PHASE_ARMED 0x00000001u
+#define KSTREAM_V2_INT_MODE_LEVEL        0x02u
+#define KSTREAM_V2_INT_EVENT_DMA_READY   0x00000002u
 #define KSTREAM_V2_INT_BOOT_LEVEL_HIGH   0x00000001u
 
 typedef enum kstream_v2_result {
