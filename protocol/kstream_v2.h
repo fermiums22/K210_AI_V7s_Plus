@@ -11,6 +11,8 @@
 #define KSTREAM_V2_FRAME_BYTES     64u
 #define KSTREAM_V2_INLINE_BYTES    24u
 #define KSTREAM_V2_BURST_BYTES     4096u
+#define KSTREAM_V2_UPDATE_RECORD_MAGIC 0x3252554bu
+#define KSTREAM_V2_UPDATE_DATA_BYTES  512u
 
 #define KSTREAM_V2_PORT_DOWNLINK   21010u
 #define KSTREAM_V2_PORT_UPLINK     21011u
@@ -57,6 +59,22 @@ typedef enum kstream_v2_result {
     KSTREAM_V2_RESULT_IO = 9,
 } kstream_v2_result_t;
 
+typedef enum kstream_v2_update_record_type {
+    KSTREAM_V2_UPDATE_BEGIN = 1,
+    KSTREAM_V2_UPDATE_DATA = 2,
+    KSTREAM_V2_UPDATE_ABORT = 3,
+    KSTREAM_V2_UPDATE_STATUS = 4,
+} kstream_v2_update_record_type_t;
+
+typedef struct __attribute__((packed, aligned(4))) kstream_v2_update_record {
+    uint32_t magic;
+    uint32_t session;
+    uint16_t length;
+    uint8_t type;
+    uint8_t reserved;
+    uint32_t crc32;
+} kstream_v2_update_record_t;
+
 typedef struct __attribute__((packed, aligned(4))) kstream_v2_command {
     uint32_t magic;
     uint8_t version;
@@ -96,6 +114,8 @@ _Static_assert(sizeof(kstream_v2_command_t) == KSTREAM_V2_FRAME_BYTES,
                "kstream command must be 64 bytes");
 _Static_assert(sizeof(kstream_v2_response_t) == KSTREAM_V2_FRAME_BYTES,
                "kstream response must be 64 bytes");
+_Static_assert(sizeof(kstream_v2_update_record_t) == 16u,
+               "kstream update record must be 16 bytes");
 
 uint32_t kstream_v2_crc32(const void *data, size_t length);
 void kstream_v2_command_finalize(kstream_v2_command_t *command);

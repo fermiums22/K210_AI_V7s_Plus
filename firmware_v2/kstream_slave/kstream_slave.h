@@ -40,5 +40,6 @@ size_t kstream_console_write(const void *data, size_t length);
 
 size_t kstream_update_read(void *data, size_t length);
 size_t kstream_update_write(const void *data, size_t length);
+void kstream_link_wait(void);
 
 #endif

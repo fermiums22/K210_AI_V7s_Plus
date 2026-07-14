@@ -79,6 +79,8 @@ static SemaphoreHandle_t s_dma_tx_done;
 static SemaphoreHandle_t s_downlink_ready;
 static SemaphoreHandle_t s_uplink_space;
 static SemaphoreHandle_t s_update_ready;
+static SemaphoreHandle_t s_update_space;
+static SemaphoreHandle_t s_link_ready;
 static StaticSemaphore_t s_console_tx_mutex_storage;
 static SemaphoreHandle_t s_console_tx_mutex;
 static uint32_t s_ready_level = 1u;
@@ -423,8 +425,10 @@ static void handle_pull(void)
                   &SSI->dr[0], true, false, wire / 4u, true);
     }
     ring_read_commit(ring, s_command.length);
-    if (ring == &s_update_tx)
+    if (ring == &s_update_tx) {
+        (void)xSemaphoreGive(s_update_space);
         return;
+    }
     if (ring == &s_uplink) {
         s_uplink_bytes += s_command.length;
         (void)xSemaphoreGive(s_uplink_space);
@@ -470,6 +474,8 @@ static void transport_task(void *arg)
             s_downlink.read_count = s_downlink.write_count;
             s_uplink.read_count = s_uplink.write_count;
             s_console_rx.read_count = s_console_rx.write_count;
+            s_update_rx.read_count = s_update_rx.write_count;
+            s_update_tx.read_count = s_update_tx.write_count;
             taskEXIT_CRITICAL();
             s_expected_sequence = s_command.sequence;
             s_activated = true;
@@ -491,6 +497,7 @@ static void transport_task(void *arg)
         switch (s_command.opcode) {
         case KSTREAM_V2_OP_HELLO:
             send_response(KSTREAM_V2_RESULT_OK, "k210-spi-slave-v2");
+            (void)xSemaphoreGive(s_link_ready);
             break;
         case KSTREAM_V2_OP_STATUS:
         case KSTREAM_V2_OP_CONTROL:
@@ -522,8 +529,11 @@ bool kstream_slave_start(void)
     s_downlink_ready = xSemaphoreCreateBinary();
     s_uplink_space = xSemaphoreCreateBinary();
     s_update_ready = xSemaphoreCreateBinary();
+    s_update_space = xSemaphoreCreateBinary();
+    s_link_ready = xSemaphoreCreateBinary();
     if (!s_dma_rx_done || !s_dma_tx_done || !s_downlink_ready ||
-        !s_uplink_space || !s_update_ready)
+        !s_uplink_space || !s_update_ready || !s_update_space ||
+        !s_link_ready)
         return false;
     s_console_tx_mutex = xSemaphoreCreateMutexStatic(&s_console_tx_mutex_storage);
     if (!s_console_tx_mutex)
@@ -622,8 +632,10 @@ size_t kstream_update_read(void *data, size_t length)
 size_t kstream_update_write(const void *data, size_t length)
 {
     const uint8_t *source = (const uint8_t *)data;
-    if (ring_free(&s_update_tx) < length)
+    if (length > s_update_tx.size)
         return 0u;
+    while (ring_free(&s_update_tx) < length)
+        (void)xSemaphoreTake(s_update_space, portMAX_DELAY);
     size_t requested = length;
     size_t total = 0u;
     while (length != 0u) {
@@ -636,6 +648,11 @@ size_t kstream_update_write(const void *data, size_t length)
         total += count;
     }
     return total == requested ? total : 0u;
+}
+
+void kstream_link_wait(void)
+{
+    (void)xSemaphoreTake(s_link_ready, portMAX_DELAY);
 }
 
 void kstream_slave_get_stats(kstream_slave_stats_t *stats)

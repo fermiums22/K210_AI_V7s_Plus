@@ -37,6 +37,10 @@ add_executable(k210_kstream_slave_v2
 )
 
 if (K210_APP_SLOT0)
+    find_program(PYTHON_EXECUTABLE NAMES python3 python)
+    if (NOT PYTHON_EXECUTABLE)
+        message(FATAL_ERROR "Python 3 is required to validate the slot image")
+    endif()
     target_sources(k210_kstream_slave_v2 PRIVATE "${ROOT}/src/boot_app_header.S")
     target_compile_definitions(k210_kstream_slave_v2 PRIVATE K210_APP_SLOT0=1)
 endif()
@@ -67,3 +71,11 @@ add_custom_command(TARGET k210_kstream_slave_v2 POST_BUILD
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     COMMENT "-> k210_kstream_slave_v2.bin ready for kflash"
 )
+
+if (K210_APP_SLOT0)
+    add_custom_command(TARGET k210_kstream_slave_v2 POST_BUILD
+        COMMAND ${PYTHON_EXECUTABLE} "${ROOT}/tools/print_slot0_header.py"
+                --pad "${CMAKE_BINARY_DIR}/k210_kstream_slave_v2.bin"
+        COMMENT "-> validating and padding K210 slot image"
+    )
+endif()
