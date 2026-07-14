@@ -33,6 +33,8 @@
 #define CONSOLE_RX_BYTES (8u * 1024u)
 #define CONSOLE_TX_BYTES (8u * 1024u)
 #define TX_FIFO_BYTES     KSTREAM_V2_BURST_BYTES
+#define CONSOLE_TX_PIO_BYTES 128u
+#define SSI_TX_FIFO_WORDS 8u
 
 #define SSI_CTRLR0_TMOD_TX (1u << 8)
 #define SSI_CTRLR0_SLV_OE  (1u << 10)
@@ -74,6 +76,7 @@ static SemaphoreHandle_t s_console_tx_mutex;
 static uint32_t s_ready_level = 1u;
 static bool s_int_active;
 static bool s_activated;
+static volatile uint32_t s_stage;
 static uint32_t s_expected_sequence;
 static uint32_t s_commands;
 static uint32_t s_faults;
@@ -86,9 +89,7 @@ static void wait_master_int(bool high)
 {
     const uint32_t mask = 1u << GPIO_MASTER_INT;
     while (((GPIOHS_REG->input_val.u32[0] & mask) != 0u) != high)
-        if (s_command.opcode == KSTREAM_V2_OP_PUSH &&
-            s_command.stream == KSTREAM_V2_STREAM_CONSOLE_RX)
-            vTaskDelay(1u);
+        taskYIELD();
 }
 
 static void master_int_mode(void)
@@ -117,6 +118,11 @@ static void dma_phase(uint32_t request, const volatile void *source,
 {
     handle_t dma = transmit ? s_dma_tx : s_dma_rx;
     SemaphoreHandle_t dma_done = transmit ? s_dma_tx_done : s_dma_rx_done;
+    bool active = s_int_active;
+    s_stage = transmit ? 110u : 100u;
+    if (active)
+        wait_master_int(false);
+    s_stage = transmit ? 111u : 101u;
     (void)xSemaphoreTake(dma_done, 0u);
     const uint32_t *tx_words = NULL;
     if (transmit) {
@@ -140,20 +146,42 @@ static void dma_phase(uint32_t request, const volatile void *source,
     __sync_synchronize();
     if (transmit && s_commands == 1u)
         uarths_puts("KSTREAM:TX DMA_ARMED\r\n");
-    if (transmit)
-        wait_master_int(true);
-    if (transmit && s_commands == 1u)
-        uarths_puts("KSTREAM:TX MASTER_IDLE\r\n");
     ready_set(true);
+    s_stage = transmit ? 112u : 102u;
     if (transmit && s_commands == 1u)
         uarths_puts("KSTREAM:TX RESPONSE_ARMED\r\n");
     if (words != 0u)
         (void)xSemaphoreTake(dma_done, portMAX_DELAY);
-    wait_master_int(false);
-    if (!transmit)
+    s_stage = transmit ? 113u : 103u;
+    if (active) {
+        wait_master_int(true);
+    } else {
         s_int_active = true;
+    }
     ready_set(false);
+    s_stage = transmit ? 114u : 104u;
+}
+
+static void pio_tx_phase(const void *source, size_t words)
+{
+    const uint32_t *data = (const uint32_t *)source;
+    size_t sent = 0u;
+
+    s_stage = 120u;
+    wait_master_int(false);
+    SSI->dr[0] = UINT32_MAX;
+    while (sent < words && SSI->txflr < SSI_TX_FIFO_WORDS)
+        SSI->dr[0] = data[sent++];
+    __sync_synchronize();
+    ready_set(true);
+    s_stage = 121u;
+    while (sent < words) {
+        if (SSI->txflr < SSI_TX_FIFO_WORDS)
+            SSI->dr[0] = data[sent++];
+    }
     wait_master_int(true);
+    ready_set(false);
+    s_stage = 122u;
 }
 
 static uint32_t ring_used(const byte_ring_t *ring)
@@ -263,7 +291,9 @@ static void fill_status(kstream_v2_response_t *response, uint32_t sequence,
     response->uplink_used =
         (uplink_used < TX_FIFO_BYTES ? uplink_used : TX_FIFO_BYTES) & ~3u;
     response->console_tx_used =
-        console_tx_used < TX_FIFO_BYTES ? console_tx_used : TX_FIFO_BYTES;
+        console_tx_used < CONSOLE_TX_PIO_BYTES
+            ? console_tx_used
+            : CONSOLE_TX_PIO_BYTES;
     response->console_rx_free = ring_write_contiguous(&s_console_rx) & ~3u;
     response->faults = s_faults;
     if (message)
@@ -273,10 +303,11 @@ static void fill_status(kstream_v2_response_t *response, uint32_t sequence,
 
 static void send_response(uint8_t result, const char *message)
 {
+    s_stage = 40u;
     fill_status(&s_response, s_command.sequence, result, message);
-    spi_tx_mode(true);
-    dma_phase(SYSCTL_DMA_SELECT_SSI2_TX_REQ, &s_response, &SSI->dr[0],
-              true, false, sizeof(s_response) / 4u, true);
+    spi_tx_mode(false);
+    pio_tx_phase(&s_response, sizeof(s_response) / 4u);
+    s_stage = 41u;
     spi_command_mode();
 }
 
@@ -330,6 +361,7 @@ static void handle_push(void)
 
 static void handle_pull(void)
 {
+    s_stage = 30u;
     byte_ring_t *ring = pull_ring(s_command.stream);
     uint32_t wire = s_command.arg0;
     uint32_t expected_wire = s_command.length;
@@ -354,9 +386,14 @@ static void handle_pull(void)
         memset(s_rx_bounce + s_command.length, 0, wire - s_command.length);
         source = s_rx_bounce;
     }
-    spi_tx_mode(true);
-    dma_phase(SYSCTL_DMA_SELECT_SSI2_TX_REQ, source,
-              &SSI->dr[0], true, false, wire / 4u, true);
+    if (ring == &s_console_tx) {
+        spi_tx_mode(false);
+        pio_tx_phase(source, wire / 4u);
+    } else {
+        spi_tx_mode(true);
+        dma_phase(SYSCTL_DMA_SELECT_SSI2_TX_REQ, source,
+                  &SSI->dr[0], true, false, wire / 4u, true);
+    }
     ring_read_commit(ring, s_command.length);
     if (ring == &s_uplink) {
         s_uplink_bytes += s_command.length;
@@ -369,10 +406,12 @@ static void transport_task(void *arg)
 {
     (void)arg;
     for (;;) {
+        s_stage = 1u;
         spi_command_mode();
         dma_phase(SYSCTL_DMA_SELECT_SSI2_RX_REQ, &SSI->dr[0], s_command_wire,
                   false, true, sizeof(s_command_wire) / 4u, false);
         memcpy(&s_command, s_command_wire, sizeof(s_command));
+        s_stage = 2u;
         ++s_commands;
         if (!kstream_v2_command_valid(&s_command)) {
             s_bad_magic = s_command.magic;
@@ -550,6 +589,9 @@ void kstream_slave_get_stats(kstream_slave_stats_t *stats)
     stats->bad_magic = s_bad_magic;
     stats->bad_crc = s_bad_crc;
     stats->calculated_crc = s_calculated_crc;
+    stats->stage = s_stage;
+    stats->opcode = s_command.opcode;
+    stats->stream = s_command.stream;
     stats->downlink_bytes = s_downlink_bytes;
     stats->uplink_bytes = s_uplink_bytes;
 }

@@ -17,6 +17,9 @@ typedef struct kstream_slave_stats {
     uint32_t bad_magic;
     uint32_t bad_crc;
     uint32_t calculated_crc;
+    uint32_t stage;
+    uint8_t opcode;
+    uint8_t stream;
     uint64_t downlink_bytes;
     uint64_t uplink_bytes;
 } kstream_slave_stats_t;

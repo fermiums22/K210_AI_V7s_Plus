@@ -56,7 +56,6 @@ static void log_line(const char *format, ...)
     line[used++] = '\r';
     line[used++] = '\n';
     line[used] = 0;
-    uarths_puts(line);
     (void)kstream_console_write(line, used);
 }
 
@@ -259,9 +258,6 @@ static void console_task(void *arg)
             continue;
         if (byte == '\n') {
             line[used] = 0;
-            uarths_puts("KSTREAM:CONSOLE_RX ");
-            uarths_puts(line);
-            uarths_puts("\r\n");
             console_command(line);
             used = 0u;
         } else if (used + 1u < sizeof(line)) {
@@ -298,7 +294,9 @@ int main(void)
         kstream_slave_get_stats(&stats);
         char heartbeat[192];
         snprintf(heartbeat, sizeof(heartbeat),
-                 "KSTREAM:HEARTBEAT commands=%lu faults=%lu crx=%lu bad=%08lx crc=%08lx/%08lx down=%llu up=%llu\r\n",
+                 "KSTREAM:HEARTBEAT stage=%lu op=%u stream=%u commands=%lu faults=%lu crx=%lu bad=%08lx crc=%08lx/%08lx down=%llu up=%llu\r\n",
+                 (unsigned long)stats.stage, (unsigned)stats.opcode,
+                 (unsigned)stats.stream,
                  (unsigned long)stats.commands, (unsigned long)stats.faults,
                  (unsigned long)stats.console_rx_used,
                  (unsigned long)stats.bad_magic, (unsigned long)stats.bad_crc,
