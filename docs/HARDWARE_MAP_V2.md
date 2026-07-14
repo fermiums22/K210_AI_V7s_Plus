@@ -30,7 +30,7 @@ Primary references:
 | Debug RX | 4 | UARTHS_RX | CONFIRMED-BENCH | CH340, logs only, 115200 8N1 |
 | Debug TX | 5 | UARTHS_TX | CONFIRMED-BENCH | CH340, logs only, 115200 8N1 |
 | ESP UART TX | 6 | UART2_RX | CONFIRMED-BENCH | Signal name is ESP-side; K210 receives |
-| ESP UART RX | 7 | UART2_TX | CONFIRMED-BENCH | Signal name is ESP-side; K210 transmits |
+| ESP UART RX / KLINK ACK | 7 | UART2_TX in recovery, GPIOHS1 in APP | CONFIRMED-BENCH | K210 TX is unused by APP; it becomes master phase ACK after `KLINK_ACTIVE` |
 | ESP EN | 8 | GPIO0 | CONFIRMED-BENCH | Active high |
 | Amplifier MUTE | 9 | GPIO1 | CONFIRMED-BENCH | Low is mute |
 | Amplifier SHDN | 10 | GPIO2 | CONFIRMED-BENCH | Low is shutdown |
@@ -121,8 +121,9 @@ and DMA. Application/UI/network tasks only exchange timestamped PCM buffers.
 ## Required first hardware tests
 
 1. STM32 IO11..IO14 continuity and UART integrity.
-2. ESP SPI cells on SPI1, mode 0, fixed pin map: command 2 write + command 3 read,
-   8-bit address, 64-byte logical cell, GPIO0/IO15 READY handshake.
+2. ESP SPI cells on SPI1, mode 0, fixed pin map: command 1 descriptor, command
+   3 region read, command 2 region write, command 4 result, 8-bit region address,
+   64-byte logical cell, GPIO0/IO15 READY and GPIO3/IO7 ACK handshakes.
 3. Frequency ladder 2/4/8/10/16/20 MHz with CRC and exact error counters.
 4. SPI1 ownership switch ESP -> SD -> ESP without runtime pin scanning.
 5. Media ownership switch camera -> LCD -> microphone -> LCD.

@@ -74,7 +74,7 @@ SECTIONS
     /* .gnu.warning sections are handled specially by elf32.em.  */
     *(.gnu.warning)
   } > ram : DATA
-
+  
   .fini :
   {
     KEEP (*(SORT_NONE(.fini)))
@@ -82,7 +82,7 @@ SECTIONS
   PROVIDE (__etext = .);
   PROVIDE (_etext = .);
   PROVIDE (etext = .);
-
+  
   .rodata : { *(.rodata .rodata.* .gnu.linkonce.r.*) } > ram : DATA
   .rodata1 : { *(.rodata1) } > ram : DATA
   .sdata2 :
@@ -98,7 +98,7 @@ SECTIONS
   .gnu_extab : { *(.gnu_extab) } > ram : DATA
   .gcc_except_table : { *(.gcc_except_table .gcc_except_table.*) } > ram : DATA
   .exception_ranges : { *(.exception_ranges .exception_ranges*) } > ram : DATA
-
+  
   .preinit_array :
   {
     PROVIDE_HIDDEN (__preinit_array_start = .);
@@ -149,7 +149,7 @@ SECTIONS
     KEEP (*(SORT(.dtors.*)))
     KEEP (*(.dtors))
   } > ram : DATA
-
+  
   . = ALIGN(64);
   .data :
   {
@@ -167,7 +167,7 @@ SECTIONS
     *(.sdata .sdata.* .gnu.linkonce.s.*)
   } > ram : DATA
   _edata = .; PROVIDE (edata = .);
-
+  
   . = ALIGN(64);
   PROVIDE( _app_flash_image_end = ABSOLUTE(.) );
   . = .;
@@ -237,7 +237,7 @@ SECTIONS
   /* Heap end is at the end of memory, the memory size can set in kconfig */
   PROVIDE( _heap_end = _ram_end );
   PROVIDE( _app_image_size = _app_flash_image_end - ORIGIN(ram) );
-
+  
 
   /* Stabs debugging sections.  */
   .stab          0 : { *(.stab) }
@@ -273,3 +273,4 @@ SECTIONS
   .debug_typenames 0 : { *(.debug_typenames) }
   .debug_varnames  0 : { *(.debug_varnames) }
 }
+

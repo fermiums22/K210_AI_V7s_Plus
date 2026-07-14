@@ -29,6 +29,8 @@ add_executable(k210_kstream_slave_v2
     "${CMAKE_CURRENT_LIST_DIR}/kupdate_task.c"
     "${ROOT}/firmware_v2/klink_bringup/newlib_locks.c"
     "${ROOT}/protocol/kstream_v2.c"
+    "${ROOT}/protocol/klink_v1.c"
+    "${ROOT}/protocol/klink_v1_link.c"
     "${ROOT}/protocol/knet_v2.c"
     "${ROOT}/protocol/kupdate_v2.c"
     "${ROOT}/firmware_v2/common/sha256_stream.c"

@@ -10,7 +10,7 @@ project(k210_esp_recovery_v2 C CXX ASM)
 
 option(RECOVERY_AT_TEST "Flash merged ESP8285 AT image and run STA diagnostics" OFF)
 option(RECOVERY_FORCE_FLASH "Skip application marker probe and always flash ESP" OFF)
-set(RECOVERY_BOOT_MARKER "STA_READY ssid=ELECTRONICS"
+set(RECOVERY_BOOT_MARKER "BOOT kesp-slave-klink-v2"
     CACHE STRING "UART marker proving that the flashed ESP application booted")
 
 set(ESP_V2_BUILD_DIR "${ROOT}/../K210_ESP_SPI_WIFI/esp8266_rtos_v2/bridge/build"

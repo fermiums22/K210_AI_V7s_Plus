@@ -3,6 +3,7 @@
 #include <fpioa.h>
 #include <gpio.h>
 #include <platform.h>
+#include <semphr.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -19,6 +20,7 @@
 #define PIN_DBG_RX   4
 #define PIN_DBG_TX   5
 #define PIN_ESP_TX   6
+#define PIN_ESP_RX   7
 #define PIN_ESP_EN   8
 #define PIN_ESP_BOOT 15
 #define GPIO_ESP_EN  0
@@ -27,6 +29,8 @@
 
 static volatile gpio_t *const GPIO_REG = (volatile gpio_t *)GPIO_BASE_ADDR;
 static handle_t s_esp_uart;
+static SemaphoreHandle_t s_esp_armed;
+static SemaphoreHandle_t s_esp_active;
 static volatile bool s_benchmark_uplink;
 static volatile bool s_benchmark_downlink;
 static uint64_t s_downlink_expected;
@@ -94,12 +98,37 @@ static void gpio_write(unsigned pin, bool high)
 static void esp_uart_task(void *arg)
 {
     (void)arg;
+    static const char armed_marker[] = "KLINK_ARMED role=slave";
+    static const char active_marker[] = "KLINK_ACTIVE role=slave";
+    size_t armed_matched = 0u;
+    size_t active_matched = 0u;
     for (;;) {
         uint8_t byte;
-        if (io_read(s_esp_uart, &byte, 1u) > 0)
+        if (io_read(s_esp_uart, &byte, 1u) > 0) {
             uarths_write_byte(byte);
-        else
+            if (byte == (uint8_t)armed_marker[armed_matched]) {
+                ++armed_matched;
+                if (armed_marker[armed_matched] == 0) {
+                    (void)xSemaphoreGive(s_esp_armed);
+                    kstream_slave_esp_armed();
+                    armed_matched = 0u;
+                }
+            } else {
+                armed_matched = byte == (uint8_t)armed_marker[0] ? 1u : 0u;
+            }
+            if (byte == (uint8_t)active_marker[active_matched]) {
+                ++active_matched;
+                if (active_marker[active_matched] == 0) {
+                    (void)xSemaphoreGive(s_esp_active);
+                    kstream_slave_esp_active();
+                    active_matched = 0u;
+                }
+            } else {
+                active_matched = byte == (uint8_t)active_marker[0] ? 1u : 0u;
+            }
+        } else {
             vTaskDelay(1u);
+        }
     }
 }
 
@@ -107,6 +136,7 @@ static bool esp_prepare(void)
 {
     sysctl_clock_enable(SYSCTL_CLOCK_GPIO);
     fpioa_set_function(PIN_ESP_TX, FUNC_UART2_RX);
+    fpioa_set_function(PIN_ESP_RX, FUNC_UART2_TX);
     fpioa_set_function(PIN_ESP_EN, FUNC_GPIO0);
     fpioa_set_function(PIN_ESP_BOOT, FUNC_GPIO3);
     gpio_write(GPIO_ESP_BOOT, true);
@@ -116,13 +146,17 @@ static bool esp_prepare(void)
     if (!s_esp_uart)
         return false;
     uart_config(s_esp_uart, 115200u, 8u, UART_STOP_1, UART_PARITY_NONE);
+    s_esp_armed = xSemaphoreCreateBinary();
+    s_esp_active = xSemaphoreCreateBinary();
+    if (!s_esp_armed || !s_esp_active)
+        return false;
     return xTaskCreate(esp_uart_task, "esp_log", 1024u, NULL, 2u, NULL) == pdPASS;
 }
 
 static void esp_enable(void)
 {
-    /* IO15 stays driven HIGH.  The ESP application transfers it to the
-     * working INT protocol by sending ACTIVATE_INT over SPI. */
+    /* IO15 remains HIGH until the KLINK activation cell has transferred
+     * READY ownership to the ESP at the same electrical level. */
     gpio_write(GPIO_ESP_EN, true);
 }
 
@@ -271,42 +305,51 @@ int main(void)
 {
     clock_init();
     log_init();
-    uarths_puts("KSTREAM:BOOT k210-slave-v2 spi2=slave dma=1 log=115200\r\n");
+    uarths_puts("KLINK:BOOT k210-master-v2 spi1=master log=115200\r\n");
     if (!esp_prepare()) {
         uarths_puts("KSTREAM:FATAL ESP prepare failed\r\n");
         for (;;)
             vTaskDelay(ticks(1000u));
     }
+    /* This is only the EN-low reset pulse.  Boot readiness is the explicit
+     * KLINK_ARMED UART state transition below, never elapsed time. */
+    vTaskDelay(ticks(100u));
+    esp_enable();
+    uarths_puts("KLINK:ESP_ENABLED waiting=KLINK_ARMED\r\n");
+    (void)xSemaphoreTake(s_esp_armed, portMAX_DELAY);
+    uarths_puts("KLINK:ESP_ARMED activation\r\n");
     if (!kstream_slave_start()) {
-        uarths_puts("KSTREAM:FATAL slave init failed\r\n");
+        uarths_puts("KLINK:FATAL master init failed\r\n");
         for (;;)
             vTaskDelay(ticks(1000u));
     }
+    (void)xSemaphoreTake(s_esp_active, portMAX_DELAY);
+    kstream_slave_release_ready();
+    uarths_puts("KLINK:READY_OWNER esp io15=input io7=phase-ack\r\n");
     if (!kupdate_task_start()) {
         uarths_puts("KSTREAM:FATAL update task failed\r\n");
         for (;;)
             vTaskDelay(ticks(1000u));
     }
-    /* This delay is only the EN-low reset pulse.  It is not a boot-readiness
-     * decision: IO15 remains HIGH until ACTIVATE_INT is received. */
-    vTaskDelay(ticks(100u));
-    esp_enable();
-    xTaskCreate(downlink_sink_task, "down_sink", 1536u, NULL, 3u, NULL);
-    xTaskCreate(uplink_benchmark_task, "up_source", 1536u, NULL, 2u, NULL);
-    xTaskCreate(console_task, "console", 1536u, NULL, 4u, NULL);
-    log_line("KSTREAM:SLAVE_READY cs=io0 clk=io1 miso=io2 mosi=io3");
+    /* These workers do bounded ring work and then block on an event.  Keeping
+     * them above the continuously runnable SPI master prevents the transport
+     * from starving its own producer/consumer under full-duplex load. */
+    xTaskCreate(downlink_sink_task, "down_sink", 1536u, NULL, 5u, NULL);
+    xTaskCreate(uplink_benchmark_task, "up_source", 1536u, NULL, 5u, NULL);
+    xTaskCreate(console_task, "console", 1536u, NULL, 5u, NULL);
+    uarths_puts("KLINK:MASTER_READY cs=io0 clk=io1 miso=io2 mosi=io3\r\n");
     for (;;) {
         kstream_slave_stats_t stats;
         kstream_slave_get_stats(&stats);
-        char heartbeat[192];
+        char heartbeat[224];
         snprintf(heartbeat, sizeof(heartbeat),
-                 "KSTREAM:HEARTBEAT stage=%lu op=%u stream=%u commands=%lu faults=%lu crx=%lu bad=%08lx crc=%08lx/%08lx down=%llu up=%llu\r\n",
-                 (unsigned long)stats.stage, (unsigned)stats.opcode,
-                 (unsigned)stats.stream,
-                 (unsigned long)stats.commands, (unsigned long)stats.faults,
-                 (unsigned long)stats.console_rx_used,
-                 (unsigned long)stats.bad_magic, (unsigned long)stats.bad_crc,
+                 "KLINK:HEARTBEAT role=master stage=%lu exchanges=%lu faults=%lu ready=%u ack=%u result=%08lx crx=%lu bad=%lu down=%llu up=%llu\r\n",
+                 (unsigned long)stats.stage, (unsigned long)stats.commands,
+                 (unsigned long)stats.faults,
+                 (unsigned)stats.opcode, (unsigned)stats.stream,
                  (unsigned long)stats.calculated_crc,
+                 (unsigned long)stats.console_rx_used,
+                 (unsigned long)stats.bad_magic,
                  (unsigned long long)stats.downlink_bytes,
                  (unsigned long long)stats.uplink_bytes);
         uarths_puts(heartbeat);

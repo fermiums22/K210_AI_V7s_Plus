@@ -33,7 +33,7 @@
 #define ESP_FLASH_BAUD   921600u
 #define ESP_FLASH_BLOCK  16384u
 #ifndef ESP_BOOT_MARKER
-#define ESP_BOOT_MARKER  "STA_READY ssid=ELECTRONICS"
+#define ESP_BOOT_MARKER  "BOOT kesp-slave-klink-v2"
 #endif
 #if defined(RECOVERY_AT_TEST) || defined(RECOVERY_FORCE_FLASH)
 #define RECOVERY_FORCE_FLASH_ONCE 1
