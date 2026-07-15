@@ -10,8 +10,7 @@ Build a deterministic C/FreeRTOS firmware stack for the K210 + ESP8285 robot:
 - audio playback and bounded microphone capture;
 - LCD rendering without blocking camera/audio/network state machines;
 - Wi-Fi update of K210 and STM32, plus a controlled ESP recovery/update path;
-- 115200 ESP→K210 UART used only for human-readable logs and recovery
-  diagnostics. Its unused K210→ESP direction becomes a phase ACK in APP.
+- 115200 UART used only for human-readable logs and recovery diagnostics.
 
 The v2 build is independent. It lives under `firmware_v2` and does not compile
 legacy `src`, KSD, `esp_spi_link`, runtime SPI scanners, fast-tuning scripts, or
@@ -74,28 +73,19 @@ legacy file into v2 by accident.
 Application code cannot call FPIOA, SPI, UART, I2S, DVP, flash, or FatFs APIs.
 It posts typed messages to the owner.
 
-## KLINK v1 physical transport
+## KSTREAM v2 physical transport
 
-- K210 is SPI master, ESP8285 is SPI slave.
-- ESP8266 HSPI uses fixed status and buffer commands. K210 command `1` writes a
-  descriptor (`operation`, known memory region, length, token), command `3`
-  reads that region, command `2` writes it, and command `4` reads the ESP result.
-  Region 0 is the 64-byte KLINK mailbox; unsupported regions are terminal
-  protocol errors rather than dynamically discovered memory.
+- ESP8285 is the only SPI master; K210 SPI2 is the slave.
+- ESP8266 HSPI uses fixed buffer commands: `2` writes K210→ESP and `3` reads
+  ESP→K210, each with an 8-bit zero address and one 64-byte logical KLINK cell.
 - The added ESP GPIO0↔K210 IO15 wire is the boot strap during reset and a READY
   handshake after boot. ESP asserts READY only after the complete MISO cell is
   stable; K210 never guesses with sleeps.
-- K210 IO7 is UART2 TX only in recovery. After `KLINK_ACTIVE`, APP remaps it to
-  GPIOHS1 and drives ESP GPIO3 as ACK. K210 changes ACK only after the current
-  SPI command has completed; ESP changes READY only after validating and arming
-  the next phase.
-- K210 SPI1 on fixed IO0..IO3, mode 0, MSB first.
-- One exchange is a four-phase handshake: descriptor write, 64-byte region
-  read, 64-byte region write, result read. Every phase has a distinct HSPI done
-  interrupt and an ACK/READY transition, so command/address registers cannot be
-  overwritten by the following CS before ESP records them. The echoed token and
-  the KLINK CRC bind the result to the exact transaction. A phase deadline only
-  terminates and reports a missing transition; it never retries it.
+- ESP HSPI uses GPIO15/14/12/13 for CS/CLK/MISO/MOSI.
+- K210 uses IO0..IO3 for CS/CLK/MISO/MOSI, IO7 for PHASE input, and IO15 for READY output.
+- One exchange is a READY-gated 64-byte read-buffer operation followed by a
+  64-byte write-buffer operation. ESP processes each write exactly once from
+  the HSPI done interrupt; it never free-runs over a shared buffer.
 - Production has one fixed frequency selected by the hardware qualification
   test. It never scans frequency, mode, CS, pin order, magic offset, or length.
 - Idle polling is periodic for bounded command latency. When either side has
@@ -154,12 +144,10 @@ ESP is a stateless transport endpoint, not the robot application.
 - UART at 115200 is used for human-readable logs. ESP ROM recovery begins at
   115200, loads a stub, and then switches to the separately qualified high rate.
 
-The ESP SPI task blocks on hardware phase transitions. Socket workers that drain
-bounded rings may preempt it between phases, while READY keeps K210 from touching
-an unarmed window. This prevents continuous uplink from starving the network
-sender. KLINK credits provide backpressure, so TCP naturally stops the sender
-when K210 cannot accept more data. A disconnect or malformed frame aborts the
-current operation at its first failing offset; the firmware does not hide it
+The ESP SPI task is higher priority than socket workers. Socket workers write to
+bounded rings using KLINK credits as backpressure, so TCP naturally stops the
+sender when K210 cannot accept more data. A disconnect or malformed frame aborts
+the current operation at its first failing offset; the firmware does not hide it
 with reconnect/retry loops.
 
 ## SD ownership and file service

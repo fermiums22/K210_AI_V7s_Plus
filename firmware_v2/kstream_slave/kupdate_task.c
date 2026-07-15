@@ -340,5 +340,6 @@ static void update_task(void *arg)
 
 bool kupdate_task_start(void)
 {
-    return xTaskCreate(update_task, "kupdate", 3072u, NULL, 3u, NULL) == pdPASS;
+    return xTaskCreate(update_task, "kupdate", 3072u, NULL,
+                       KSTREAM_TASK_PRIORITY, NULL) == pdPASS;
 }

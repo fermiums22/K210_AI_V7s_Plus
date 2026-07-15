@@ -29,7 +29,7 @@ using namespace sys;
 
 #define SPI_TRANSMISSION_THRESHOLD 0x800UL
 #define SPI_FAST_DMA_MAX_FRAMES 128UL
-#define SPI_USE_FAST_DMA_SMALL_FRAMES 1
+#define SPI_USE_FAST_DMA_SMALL_FRAMES 0
 /* SPI Controller */
 
 #define TMOD_MASK (3 << tmod_off_)
@@ -349,7 +349,7 @@ int k_spi_driver::write(k_spi_device_driver &device, gsl::span<const uint8_t> bu
     auto buffer_write = buffer.data();
     set_bit_mask(&spi_.ctrlr0, TMOD_MASK, TMOD_VALUE(1));
 
-    if (SPI_USE_FAST_DMA_SMALL_FRAMES && device.buffer_width_ == 1 && tx_frames >= 1 &&
+    if (SPI_USE_FAST_DMA_SMALL_FRAMES && device.buffer_width_ == 1 && tx_frames >= 64 &&
         tx_frames <= SPI_FAST_DMA_MAX_FRAMES)
     {
         ensure_fast_dma();
@@ -446,7 +446,7 @@ int k_spi_driver::read_write(k_spi_device_driver &device, gsl::span<const uint8_
     auto buffer_write = write_buffer.data();
     uint32_t i = 0;
 
-    if (SPI_USE_FAST_DMA_SMALL_FRAMES && device.buffer_width_ == 1 && rx_frames >= 1 &&
+    if (SPI_USE_FAST_DMA_SMALL_FRAMES && device.buffer_width_ == 1 && rx_frames >= 64 &&
         rx_frames <= SPI_FAST_DMA_MAX_FRAMES &&
         tx_frames <= SPI_FAST_DMA_MAX_FRAMES)
     {

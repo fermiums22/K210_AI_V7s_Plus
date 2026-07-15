@@ -23,19 +23,19 @@ Primary references:
 
 | Function | K210 IO | Peripheral mapping | State | Notes |
 |---|---:|---|---|---|
-| ESP SPI CS | 0 | SPI1_SS0 in v2 | CONFIRMED-SCHEMATIC | M1W internal connection to ESP GPIO15 |
-| ESP SPI CLK | 1 | SPI1_SCLK in v2 | CONFIRMED-SCHEMATIC | M1W internal connection to ESP GPIO14 |
-| ESP SPI MISO | 2 | SPI1_D1 in v2 | CONFIRMED-SCHEMATIC | ESP GPIO12 to K210 |
-| ESP SPI MOSI | 3 | SPI1_D0 in v2 | CONFIRMED-SCHEMATIC | K210 to ESP GPIO13 |
+| ESP SPI CS | 0 | SPI_SLAVE_SS | CONFIRMED-BENCH | ESP GPIO15 to K210 |
+| ESP SPI CLK | 1 | SPI_SLAVE_SCLK | CONFIRMED-BENCH | ESP GPIO14 to K210 |
+| ESP SPI MISO | 2 | SPI_SLAVE_D0 output | CONFIRMED-BENCH | K210 to ESP GPIO12 |
+| ESP SPI MOSI | 3 | SPI_SLAVE_D0 input | CONFIRMED-BENCH | ESP GPIO13 to K210 |
 | Debug RX | 4 | UARTHS_RX | CONFIRMED-BENCH | CH340, logs only, 115200 8N1 |
 | Debug TX | 5 | UARTHS_TX | CONFIRMED-BENCH | CH340, logs only, 115200 8N1 |
 | ESP UART TX | 6 | UART2_RX | CONFIRMED-BENCH | Signal name is ESP-side; K210 receives |
-| ESP UART RX / KLINK ACK | 7 | UART2_TX in recovery, GPIOHS1 in APP | CONFIRMED-BENCH | K210 TX is unused by APP; it becomes master phase ACK after `KLINK_ACTIVE` |
+| ESP SPI PHASE | 7 | GPIOHS4 input | CONFIRMED-BENCH | ESP GPIO3 to K210; master phase/control |
 | ESP EN | 8 | GPIO0 | CONFIRMED-BENCH | Active high |
 | Amplifier MUTE | 9 | GPIO1 | CONFIRMED-BENCH | Low is mute |
 | Amplifier SHDN | 10 | GPIO2 | CONFIRMED-BENCH | Low is shutdown |
 | RGB LED | 12,13,14 | GPIO/PWM | CONFIRMED-SCHEMATIC | These pins are electrically loaded by LEDs |
-| ESP GPIO0/BOOT/READY | 15 | GPIO3 | CONFIRMED-BENCH | Viktor's added wire to ESP corner pad; K210 drives strap during reset, then releases input; ESP drives READY at runtime |
+| ESP GPIO0/BOOT/READY | 15 | GPIO3 output | CONFIRMED-BENCH | K210 holds ESP boot strap high during reset and drives READY at runtime |
 | K210 BOOT | 16 | input | CONFIRMED-SCHEMATIC | Active low at power-up |
 | LCD backlight | 17 | GPIO6 | CONFIRMED-BENCH | Active high |
 | Microphone BCK | 18 | I2S0_SCLK | CONFIRMED-SCHEMATIC | Shares physical media pin group |
@@ -121,9 +121,8 @@ and DMA. Application/UI/network tasks only exchange timestamped PCM buffers.
 ## Required first hardware tests
 
 1. STM32 IO11..IO14 continuity and UART integrity.
-2. ESP SPI cells on SPI1, mode 0, fixed pin map: command 1 descriptor, command
-   3 region read, command 2 region write, command 4 result, 8-bit region address,
-   64-byte logical cell, GPIO0/IO15 READY and GPIO3/IO7 ACK handshakes.
+2. ESP SPI cells on SPI1, mode 0, fixed pin map: command 2 write + command 3 read,
+   8-bit address, 64-byte logical cell, GPIO0/IO15 READY handshake.
 3. Frequency ladder 2/4/8/10/16/20 MHz with CRC and exact error counters.
 4. SPI1 ownership switch ESP -> SD -> ESP without runtime pin scanning.
 5. Media ownership switch camera -> LCD -> microphone -> LCD.

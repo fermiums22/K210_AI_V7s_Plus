@@ -23,13 +23,13 @@ def open_serial_with_retry(port: str, baud: int, timeout_s: float) -> serial.Ser
     last_exc: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            ser = serial.Serial(port=port, baudrate=baud, timeout=0.2)
-            # Do not intentionally drive K210 boot/reset lines from the monitor.
-            try:
-                ser.dtr = False
-                ser.rts = False
-            except Exception:
-                pass
+            ser = serial.Serial()
+            ser.port = port
+            ser.baudrate = baud
+            ser.timeout = 0.2
+            ser.dtr = False
+            ser.rts = False
+            ser.open()
             return ser
         except Exception as exc:  # COM can still be released by kflash for a moment.
             last_exc = exc

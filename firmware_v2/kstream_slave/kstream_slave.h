@@ -5,6 +5,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define KSTREAM_TASK_PRIORITY configMAIN_TASK_PRIORITY
+
 typedef struct kstream_slave_stats {
     uint32_t downlink_used;
     uint32_t downlink_free;
@@ -25,9 +27,6 @@ typedef struct kstream_slave_stats {
 } kstream_slave_stats_t;
 
 bool kstream_slave_start(void);
-void kstream_slave_release_ready(void);
-void kstream_slave_esp_armed(void);
-void kstream_slave_esp_active(void);
 void kstream_slave_get_stats(kstream_slave_stats_t *stats);
 
 uint8_t *kstream_downlink_read_acquire(size_t *length);
