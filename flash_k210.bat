@@ -29,7 +29,7 @@ echo ERROR: unknown argument: %~1
 exit /b 2
 :args_done
 
-set "BIN=%CD%\build\robot_show.bin"
+set "BIN=%CD%\build\k210_kstream_slave_v2.bin"
 
 echo === K210 flash ===
 echo Repo: %CD%
