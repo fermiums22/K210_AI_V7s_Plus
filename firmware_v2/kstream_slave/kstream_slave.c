@@ -317,10 +317,9 @@ static void send_response(uint8_t result, const char *message)
 {
     s_stage = 40u;
     fill_status(&s_response, s_command.sequence, result, message);
-    spi_tx_mode(false);
-    taskENTER_CRITICAL();
-    pio_tx_phase(&s_response, sizeof(s_response) / 4u);
-    taskEXIT_CRITICAL();
+    spi_tx_mode(true);
+    dma_phase(SYSCTL_DMA_SELECT_SSI2_TX_REQ, &s_response,
+              &SSI->dr[0], true, false, sizeof(s_response) / 4u, true);
     s_stage = 41u;
     spi_command_mode();
 }
@@ -366,10 +365,18 @@ static void handle_push(void)
 
     uint8_t *ring_destination = ring_write_pointer(ring);
     spi_rx_dma_mode();
-    dma_phase(SYSCTL_DMA_SELECT_SSI2_RX_REQ, &SSI->dr[0],
-              s_rx_bounce, false, true,
-              (wire + SPI_RX_TRAILER_BYTES) / 4u, false);
-    memcpy(ring_destination, s_rx_bounce, s_command.length);
+    if (ring == &s_downlink) {
+        dma_phase(SYSCTL_DMA_SELECT_SSI2_RX_REQ, &SSI->dr[0],
+                  ring_destination, false, true, wire / 4u, false);
+        /* The ESP clocks guard words after the payload.  Payload DMA has
+         * completed directly into the bulk ring; discard the guards. */
+        spi_rx_fifo_drain();
+    } else {
+        dma_phase(SYSCTL_DMA_SELECT_SSI2_RX_REQ, &SSI->dr[0],
+                  s_rx_bounce, false, true,
+                  (wire + SPI_RX_TRAILER_BYTES) / 4u, false);
+        memcpy(ring_destination, s_rx_bounce, s_command.length);
+    }
     ring_write_commit(ring, s_command.length);
     if (ring == &s_downlink) {
         s_downlink_bytes += s_command.length;
@@ -412,20 +419,14 @@ static void handle_pull(void)
     }
 
     const void *source = ring_read_pointer(ring);
-    if ((ring == &s_console_tx || ring == &s_update_tx) &&
-        wire != s_command.length) {
+    if (ring == &s_console_tx || ring == &s_update_tx) {
         memcpy(s_rx_bounce, source, s_command.length);
         memset(s_rx_bounce + s_command.length, 0, wire - s_command.length);
         source = s_rx_bounce;
     }
-    if (ring == &s_console_tx || ring == &s_update_tx) {
-        spi_tx_mode(false);
-        pio_tx_phase(source, wire / 4u);
-    } else {
-        spi_tx_mode(true);
-        dma_phase(SYSCTL_DMA_SELECT_SSI2_TX_REQ, source,
-                  &SSI->dr[0], true, false, wire / 4u, true);
-    }
+    spi_tx_mode(true);
+    dma_phase(SYSCTL_DMA_SELECT_SSI2_TX_REQ, source,
+              &SSI->dr[0], true, false, wire / 4u, true);
     ring_read_commit(ring, s_command.length);
     if (ring == &s_update_tx) {
         (void)xSemaphoreGive(s_update_space);
@@ -516,7 +517,7 @@ static void transport_task(void *arg)
             send_response(KSTREAM_V2_RESULT_BAD_OPCODE, "bad opcode");
             break;
         }
-        taskYIELD();
+        vTaskDelay(1u);
     }
 }
 

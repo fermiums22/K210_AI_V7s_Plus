@@ -143,7 +143,7 @@ static void downlink_sink_task(void *arg)
             for (size_t i = 0u; i < length; ++i) {
                 if (source[i] != pattern_byte(s_downlink_expected)) {
                     uint64_t skipped;
-                    for (skipped = 1u; skipped <= 4800u; ++skipped) {
+                    for (skipped = 1200u; skipped <= 4800u; skipped += 1200u) {
                         size_t matched = 0u;
                         size_t check = length - i;
                         if (check > 16u)
@@ -197,7 +197,7 @@ static void uplink_benchmark_task(void *arg)
             destination[i] = pattern_byte(offset + i);
         kstream_uplink_write_commit(length);
         offset += length;
-        taskYIELD();
+        vTaskDelay(1u);
     }
 }
 
